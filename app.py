@@ -12,8 +12,9 @@ st.set_page_config(page_title="Market Monitor", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
+        /* Fix the top padding so title doesn't hide behind the navbar on mobile */
         .block-container {
-            padding-top: 1rem;
+            padding-top: 3rem !important; 
             padding-bottom: 2rem;
             padding-left: 0.5rem;
             padding-right: 0.5rem;
@@ -25,11 +26,12 @@ st.markdown("""
         [data-testid="stDataFrame"] div[role="grid"] div[role="rowgroup"] > div[role="row"] > div:nth-child(1) {
             min-width: 30px !important; max-width: 40px !important; width: 40px !important; flex: 0 0 40px !important;
         }
-        /* Adjust header text size */
+        /* Fix Header Text */
         h1 {
             font-size: 1.8rem !important;
-            margin-bottom: 0rem !important;
+            padding-top: 0rem !important;
         }
+        /* Force Table Text color if needed - usually not required if Theme is set correctly */
     </style>
 """, unsafe_allow_html=True)
 
