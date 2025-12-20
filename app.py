@@ -6,32 +6,30 @@ import time
 from tickers import MASTER_MAP
 
 # ----------------------------------------------------
-# 1. PAGE CONFIGURATION & CSS
+# 1. PAGE CONFIGURATION
 # ----------------------------------------------------
 st.set_page_config(page_title="Market Monitor", layout="wide", page_icon="📈")
 
+# CSS: Fix layout for Phone & Desktop
 st.markdown("""
     <style>
-        /* Fix the top padding so title doesn't hide behind the navbar on mobile */
         .block-container {
-            padding-top: 3rem !important; 
-            padding-bottom: 2rem;
+            padding-top: 3rem !important;
+            padding-bottom: 5rem;
             padding-left: 0.5rem;
             padding-right: 0.5rem;
         }
-        /* Make the first column (index) tiny */
-        [data-testid="stDataFrame"] div[role="grid"] div[role="row"] > div:nth-child(1) {
-            min-width: 30px !important; max-width: 40px !important; width: 40px !important; flex: 0 0 40px !important;
+        [data-testid="stDataFrame"], [data-testid="stMarkdownContainer"] p {
+            color: #000000 !important; /* Force Black Text */
         }
-        [data-testid="stDataFrame"] div[role="grid"] div[role="rowgroup"] > div[role="row"] > div:nth-child(1) {
-            min-width: 30px !important; max-width: 40px !important; width: 40px !important; flex: 0 0 40px !important;
-        }
-        /* Fix Header Text */
         h1 {
-            font-size: 1.8rem !important;
-            padding-top: 0rem !important;
+            font-size: 1.6rem !important;
+            margin-bottom: 0.5rem !important;
         }
-        /* Force Table Text color if needed - usually not required if Theme is set correctly */
+        /* Ensure Sidebar is on top on mobile */
+        section[data-testid="stSidebar"] {
+            z-index: 99999;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -45,26 +43,13 @@ def get_usd_rate():
     try:
         df = yf.download("USDINR=X", period="1d", progress=False)
         return float(df['Close'].iloc[-1])
-    except:
-        return 84.0
+    except: return 84.0
 
 def clean_ticker_list(tickers):
-    FIX_MAP = {
-        "M&M": "M&M.NS", "ARE&M": "ARE&M.NS", "M&MFIN": "M&MFIN.NS",
-        "MCDOWELL-N": "UNITDSPR.NS", "WAASOLAR": "WAAREERTL.NS",
-        "WEBSOL": "WEBELSOLAR.NS", "WELLIVING": "WELSPUNLIV.NS",
-        "RATTANINDIA": "RTNINDIA.NS", "GUJFLUORO": "FLUOROCHEM.NS",
-        "BERGERPAINT": "BERGEPAINT.NS", "KILBURN": "KILBUNENG.NS",
-        "FINOTEX": "FCL.NS", "SOMDIST": "SDBL.NS", "VALOR": "DBREALTY.NS",
-        "EQUINOX": "IBREALEST.NS", "WARDWIZARD": "WARDFIN.BO", 
-        "BLACKBOX": "BBOX.NS", "GALAXYSURF": "GALXBRG.BO",
-        "AUTOLINE": "AUTOIND.NS", "ANDHRACEMT": "ACL.BO", "TRIL": "TARIL.BO"
-    }
     cleaned = []
     for t in tickers:
-        base = t.replace('.NS', '').replace('.BO', '')
-        if base in FIX_MAP: t = FIX_MAP[base]
-        elif not (t.endswith('.NS') or t.endswith('.BO')): t += '.NS'
+        t = t.upper().strip()
+        if not (t.endswith('.NS') or t.endswith('.BO')): t += '.NS'
         cleaned.append(t)
     return list(set(cleaned))
 
@@ -73,84 +58,85 @@ def fetch_fundamental_single(ticker, usd_rate):
         info = yf.Ticker(ticker).info
         mcap = info.get('marketCap', np.nan)
         curr = info.get('currency', 'INR')
-        
         if not pd.isna(mcap):
-            if curr == 'INR': mcap = (mcap / usd_rate) / 1000000 
-            else: mcap = mcap / 1000000
+            mcap = (mcap / usd_rate / 1000000) if curr == 'INR' else (mcap / 1000000)
             mcap = round(mcap, 2)
-        
-        pe = info.get('trailingPE', np.nan)
-        eps = info.get('trailingEps', np.nan)
-        pb = info.get('priceToBook', np.nan)
-        div = info.get('dividendYield', np.nan)
-        if not pd.isna(div): div = div * 100 
-        
-        fetched_sector = info.get('sector', None)
-        return mcap, pe, eps, pb, div, fetched_sector
-    except:
-        return np.nan, np.nan, np.nan, np.nan, np.nan, None
+        return mcap, info.get('trailingPE', np.nan), info.get('trailingEps', np.nan), \
+               info.get('priceToBook', np.nan), (info.get('dividendYield', np.nan) * 100) if info.get('dividendYield') else np.nan, \
+               info.get('sector', None)
+    except: return np.nan, np.nan, np.nan, np.nan, np.nan, None
 
 # ----------------------------------------------------
-# 3. DATA FETCHING
+# 3. DATA FETCHING (MODE-AWARE)
 # ----------------------------------------------------
 @st.cache_data(ttl=43200) 
-def get_baselines_bulk(tickers):
+def get_baselines_bulk(tickers, mode="mobile"):
+    # Mobile Mode = Slower but safer batching
+    chunk_size = 20 if mode == "mobile" else 100
+    delay = 0.5 if mode == "mobile" else 0.1
+    
     tickers = clean_ticker_list(tickers)
     baselines = {}
     if not tickers: return {}
-    try:
-        data = yf.download(tickers, period="2y", group_by='ticker', progress=False, threads=True)
-        valid = [t for t in tickers if t in data.columns.levels[0]]
-        for t in valid:
-            try:
-                df = data[t]
-                if df.empty: continue
-                rec = df.tail(252)
-                baselines[t] = {'52H': float(rec['High'].max()), '52L': float(rec['Low'].min()), 'Jan20': np.nan}
-            except: pass
-    except: pass
+    
+    for i in range(0, len(tickers), chunk_size):
+        batch = tickers[i:i+chunk_size]
+        try:
+            time.sleep(delay)
+            data = yf.download(batch, period="2y", group_by='ticker', progress=False, threads=True)
+            for t in batch:
+                try:
+                    df = data[t] if len(batch) > 1 else data
+                    if df.empty: continue
+                    rec = df.tail(252)
+                    baselines[t] = {'52H': float(rec['High'].max()), '52L': float(rec['Low'].min()), 'Jan20': np.nan}
+                except: pass
+        except: pass
     return baselines
 
-def get_live_dashboard_optimized(tickers, baselines):
+def get_live_dashboard_optimized(tickers, baselines, mode="mobile"):
     clean_tickers = clean_ticker_list(tickers)
     rows = []
-    
     start_time = time.time()
     
-    # --- PHASE 1: NSE FETCH ---
-    chunk_size = 100
-    progress_bar = st.sidebar.progress(0, text="Fetching Stocks (NSE)...")
+    # Configure Fetching Parameters based on Mode
+    if mode == "mobile":
+        chunk_size = 20   # Tiny chunks to prevent rate limits
+        delay = 0.5       # Longer delay to be polite
+        label = "Fetching (Mobile Safe Mode)..."
+    else:
+        chunk_size = 100  # Big chunks for speed
+        delay = 0.1       # Minimal delay
+        label = "Fetching (Desktop Fast Mode)..."
+
+    progress_bar = st.sidebar.progress(0, text=label)
     failed_phase_1 = [] 
     
+    # --- PHASE 1 ---
     for i in range(0, len(clean_tickers), chunk_size):
         batch = clean_tickers[i:i+chunk_size]
-        progress_bar.progress((i/len(clean_tickers)))
+        progress_bar.progress(min((i / len(clean_tickers)), 1.0))
         try:
+            time.sleep(delay)
             data = yf.download(batch, period="5d", group_by='ticker', progress=False, threads=True)
             for t in batch:
-                loaded = False
                 try:
+                    loaded = False
                     if len(batch) > 1:
-                        if t in data.columns.levels[0]: 
-                            df = data[t]
-                            loaded = True
-                    else:
-                        df = data
-                        loaded = True
+                        if t in data.columns.levels[0]: df = data[t]; loaded = True
+                    else: df = data; loaded = True
                     
                     if loaded and not (df.empty or df['Close'].isna().all()):
-                        rows.append(process_ticker_data(t, df, baselines, t))
-                    else:
-                        failed_phase_1.append(t)
-                except:
-                    failed_phase_1.append(t)
-        except:
-            failed_phase_1.extend(batch)
+                        # Only append if valid data is returned
+                        res = process_ticker_data(t, df, baselines, t)
+                        if res: rows.append(res)
+                    else: failed_phase_1.append(t)
+                except: failed_phase_1.append(t)
+        except: failed_phase_1.extend(batch)
             
-    # --- PHASE 2: BSE FALLBACK ---
-    fallback_map = {} 
+    # --- PHASE 2: FALLBACK (Same logic for both) ---
     retry_batch = []
-    
+    fallback_map = {} 
     for t in failed_phase_1:
         if '.NS' in t:
             bse_t = t.replace('.NS', '.BO')
@@ -158,73 +144,60 @@ def get_live_dashboard_optimized(tickers, baselines):
             fallback_map[bse_t] = t
 
     if retry_batch:
-        progress_bar.progress(1.0, text=f"Retrying {len(retry_batch)} stocks on BSE...")
-        try:
-            bse_data = yf.download(retry_batch, period="5d", group_by='ticker', progress=False, threads=True)
-            for t in retry_batch:
-                try:
-                    loaded = False
-                    if len(retry_batch) > 1:
-                        if t in bse_data.columns.levels[0]:
-                            df = bse_data[t]
-                            loaded = True
-                    else:
-                        df = bse_data
-                        loaded = True
-                    
-                    if loaded and not (df.empty or df['Close'].isna().all()):
-                        original_id = fallback_map.get(t, t)
-                        rows.append(process_ticker_data(t, df, baselines, original_id))
-                except: pass
-        except: pass
+        progress_bar.progress(1.0, text="Retrying failed stocks...")
+        for i in range(0, len(retry_batch), chunk_size):
+            batch = retry_batch[i:i+chunk_size]
+            try:
+                time.sleep(delay)
+                bse_data = yf.download(batch, period="5d", group_by='ticker', progress=False, threads=True)
+                for t in batch:
+                    try:
+                        if len(batch) > 1:
+                            if t in bse_data.columns.levels[0]:
+                                res = process_ticker_data(t, bse_data[t], baselines, fallback_map.get(t, t))
+                                if res: rows.append(res)
+                    except: pass
+            except: pass
 
     progress_bar.empty()
-    end_time = time.time()
-    return pd.DataFrame(rows), (end_time - start_time)
+    return pd.DataFrame(rows), (time.time() - start_time)
 
 def process_ticker_data(ticker_to_use, df, baselines, original_id):
-    curr = float(df['Close'].iloc[-1])
-    prev = float(df['Close'].iloc[-2])
-    
-    stats = baselines.get(original_id, {'52H': curr, '52L': curr, 'Jan20': np.nan})
-    h52 = max(stats['52H'], curr)
-    l52 = min(stats['52L'], curr)
-    
-    name, sector = original_id, "Other"
-    lookup = original_id
-    if lookup not in MASTER_MAP:
-        if lookup.replace('.NS', '') in MASTER_MAP: lookup = lookup.replace('.NS', '')
-        elif lookup.replace('.BO', '') in MASTER_MAP: lookup = lookup.replace('.BO', '')
+    try:
+        curr = float(df['Close'].iloc[-1])
+        prev = float(df['Close'].iloc[-2])
+        stats = baselines.get(original_id, {'52H': curr, '52L': curr, 'Jan20': np.nan})
+        h52 = max(stats['52H'], curr)
+        l52 = min(stats['52L'], curr)
+        
+        name, sector = original_id, "Other"
+        lookup = original_id
+        if lookup in MASTER_MAP:
+            name = MASTER_MAP[lookup]['Name']
+            sector = MASTER_MAP[lookup]['Sector']
+        else:
+            base = lookup.replace('.NS','').replace('.BO','')
+            for k, v in MASTER_MAP.items():
+                if base in k: name = v['Name']; sector = v['Sector']; break
 
-    if lookup in MASTER_MAP:
-        name = MASTER_MAP[lookup]['Name']
-        sector = MASTER_MAP[lookup]['Sector']
-
-    return {
-        "Name": name,
-        "LTP": int(round(curr,0)),
-        "Change %": ((curr-prev)/prev)*100,
-        "52W High": int(round(h52,0)),
-        "Down from High (%)": ((h52-curr)/h52)*100 if h52 else 0,
-        "52W Low": int(round(l52,0)),
-        "Up from Low (%)": ((curr-l52)/l52)*100 if l52 else 0,
-        "Since Jan20 (%)": np.nan,
-        "Sector": sector,
-        "TickerID": ticker_to_use,
-        "Get Info?": False,
-        "Market Cap ($M)": None,
-        "PE Ratio": None,
-        "PB Ratio": None,
-        "Div Yield (%)": None,
-        "EPS": None
-    }
+        return {
+            "Name": name, "LTP": int(round(curr,0)), "Change %": ((curr-prev)/prev)*100,
+            "52W High": int(round(h52,0)), "Down from High (%)": ((h52-curr)/h52)*100 if h52 else 0,
+            "52W Low": int(round(l52,0)), "Up from Low (%)": ((curr-l52)/l52)*100 if l52 else 0,
+            "Since Jan20 (%)": np.nan, "Sector": sector, "TickerID": ticker_to_use,
+            "Get Info?": False, "Market Cap ($M)": None, "PE Ratio": None, "PB Ratio": None, "Div Yield (%)": None, "EPS": None
+        }
+    except: return None
 
 # ----------------------------------------------------
 # 4. MAIN EXECUTION
 # ----------------------------------------------------
-
-# --- SIDEBAR CONTROLS ---
 st.sidebar.title("Controls")
+
+# --- MODE SELECTOR (The Key Feature) ---
+# Defaults to "Mobile" for safety. Change to "Desktop" on PC.
+app_mode = st.sidebar.radio("🚀 App Mode:", ["Mobile (Safe)", "Desktop (Fast)"], index=0)
+mode_key = "mobile" if "Mobile" in app_mode else "desktop"
 
 if 'market_df' not in st.session_state: st.session_state.market_df = pd.DataFrame()
 if 'load_time' not in st.session_state: st.session_state.load_time = 0.0
@@ -239,29 +212,27 @@ if st.sidebar.button("🔄 Update Prices"):
 
 st.sidebar.subheader("Filters")
 search_query = st.sidebar.text_input("🔍 Search Stock/Sector", "")
-
-# 📱 Mobile View Checkbox Added Here
-mobile_view = st.sidebar.checkbox("📱 Mobile Simplified View", value=False)
-
+mobile_view = st.sidebar.checkbox("📱 Simplified Columns", value=(mode_key == "mobile")) # Auto-check if mobile
 view_option = st.sidebar.radio("Trend:", ["All", "Green Only", "Red Only"], index=0)
 near_high = st.sidebar.checkbox("Near 52W High (<5%)")
 near_low = st.sidebar.checkbox("Near 52W Low (<10%)")
 
 # --- LOAD DATA ---
 if st.session_state.market_df.empty:
-    with st.spinner("Loading Market Data..."):
-        baselines = get_baselines_bulk(DEFAULT_TICKERS)
-        df, duration = get_live_dashboard_optimized(DEFAULT_TICKERS, baselines)
+    with st.spinner(f"Loading in {mode_key} mode..."):
+        baselines = get_baselines_bulk(DEFAULT_TICKERS, mode=mode_key)
+        df, duration = get_live_dashboard_optimized(DEFAULT_TICKERS, baselines, mode=mode_key)
         st.session_state.market_df = df
         st.session_state.load_time = duration
         
-        loaded_ids = set()
-        for t in df['TickerID'].tolist():
-            loaded_ids.add(t) 
-            if '.BO' in t: loaded_ids.add(t.replace('.BO', '.NS'))
-        cleaned_defaults = clean_ticker_list(DEFAULT_TICKERS)
-        missing = [t for t in cleaned_defaults if t not in loaded_ids]
-        st.session_state.missing_stocks = missing
+        if not df.empty:
+            loaded_ids = set()
+            for t in df['TickerID'].tolist():
+                loaded_ids.add(t); 
+                if '.BO' in t: loaded_ids.add(t.replace('.BO', '.NS'))
+            cleaned_defaults = clean_ticker_list(DEFAULT_TICKERS)
+            missing = [t for t in cleaned_defaults if t not in loaded_ids]
+            st.session_state.missing_stocks = missing
 
 df = st.session_state.market_df.copy()
 
@@ -269,31 +240,17 @@ df = st.session_state.market_df.copy()
 if not df.empty:
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 System Status")
-    
-    total = len(DEFAULT_TICKERS)
-    updated = len(df)
-    st.sidebar.metric("Stocks Updated", f"{updated} / {total}")
+    st.sidebar.metric("Stocks Updated", f"{len(df)} / {len(DEFAULT_TICKERS)}")
     st.sidebar.metric("Load Time", f"{st.session_state.load_time:.2f}s")
     
     try:
         nifty = yf.Ticker("^NSEI")
         hist = nifty.history(period="2d")
         if not hist.empty:
-            curr_nifty = hist['Close'].iloc[-1]
-            prev_nifty = hist['Close'].iloc[-2]
-            nifty_chg = ((curr_nifty - prev_nifty)/prev_nifty)*100
-            st.sidebar.metric("Nifty 50", f"{curr_nifty:.0f}", f"{nifty_chg:+.2f}%")
-        else:
-            indices_df = yf.download("^NSEI", period="2d", progress=False)
-            if not indices_df.empty:
-                 curr_nifty = indices_df['Close'].iloc[-1]
-                 prev_nifty = indices_df['Close'].iloc[-2]
-                 nifty_chg = ((curr_nifty - prev_nifty)/prev_nifty)*100
-                 st.sidebar.metric("Nifty 50", f"{curr_nifty:.0f}", f"{nifty_chg:+.2f}%")
-            else:
-                st.sidebar.metric("Nifty 50", "N/A")
-    except:
-        st.sidebar.metric("Nifty 50", "Err")
+            curr = hist['Close'].iloc[-1]; prev = hist['Close'].iloc[-2]
+            st.sidebar.metric("Nifty 50", f"{curr:.0f}", f"{((curr-prev)/prev)*100:+.2f}%")
+        else: st.sidebar.metric("Nifty 50", "N/A")
+    except: st.sidebar.metric("Nifty 50", "Err")
 
 if st.session_state.missing_stocks:
     with st.sidebar.expander(f"⚠️ Failed ({len(st.session_state.missing_stocks)})", expanded=False):
@@ -303,11 +260,8 @@ if st.session_state.missing_stocks:
 st.title("Market Monitor")
 
 if not df.empty:
-    # Filter Logic
     if search_query:
-        df = df[df['Name'].str.contains(search_query, case=False, na=False) | 
-                df['Sector'].str.contains(search_query, case=False, na=False)]
-
+        df = df[df['Name'].str.contains(search_query, case=False, na=False) | df['Sector'].str.contains(search_query, case=False, na=False)]
     if view_option == "Green Only": df = df[df['Change %'] > 0]
     elif view_option == "Red Only": df = df[df['Change %'] < 0]
     if near_high: df = df[df['Down from High (%)'] < 5]
@@ -316,15 +270,20 @@ if not df.empty:
     df = df.sort_values(by="Name", ignore_index=True)
     df.insert(0, "#", range(1, len(df) + 1))
 
-    # Styling
+    # --- ROW LIMIT LOGIC ---
+    # Mobile Mode: Hard limit to 100 rows to prevent crash
+    # Desktop Mode: Show all by default
+    default_limit = 100 if mode_key == "mobile" else len(df)
+    limit_rows = st.sidebar.slider("Rows to Display", 10, len(df), default_limit)
+    df_display = df.head(limit_rows)
+
     def color_change(val):
         if pd.isna(val): return ''
         color = '#2ecc71' if val > 0 else '#ff4b4b' if val < 0 else ''
         return f'color: {color}'
 
-    styled_df = df.style.map(color_change, subset=['Change %', 'Since Jan20 (%)'])
+    styled_df = df_display.style.map(color_change, subset=['Change %', 'Since Jan20 (%)'])
 
-    # Column Config
     num_cols = ["LTP", "Change %", "52W High", "Down from High (%)", "52W Low", "Up from Low (%)", "Since Jan20 (%)"]
     fund_cols = ["Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
     
@@ -335,37 +294,21 @@ if not df.empty:
         "Get Info?": st.column_config.CheckboxColumn("Get Info?", width="small"),
         "TickerID": None
     }
-    for col in num_cols:
-        fmt = "%d" if "High" in col or "Low" in col or "LTP" in col else "%.1f"
-        col_config[col] = st.column_config.NumberColumn(col, width="small", format=fmt)
-    for col in fund_cols:
-        col_config[col] = st.column_config.NumberColumn(col, width="small", format="%.2f")
+    for col in num_cols: col_config[col] = st.column_config.NumberColumn(col, width="small", format="%d" if "High" in col or "Low" in col or "LTP" in col else "%.1f")
+    for col in fund_cols: col_config[col] = st.column_config.NumberColumn(col, width="small", format="%.2f")
 
-    # Dynamic Column Selection Logic
-    if mobile_view:
-        # Simplified View
-        active_cols = ["#", "Name", "LTP", "Change %"]
-    else:
-        # Full Desktop View
-        active_cols = ["#", "Name", "Sector"] + num_cols + ["Get Info?"] + fund_cols
-
-    # Table Height Calc
-    table_height = (len(df) + 1) * 35 + 3
-
-    # Render Table
+    active_cols = ["#", "Name", "LTP", "Change %"] if mobile_view else ["#", "Name", "Sector"] + num_cols + ["Get Info?"] + fund_cols
+    
+    # Render
     edited_df = st.data_editor(
         styled_df, 
-        use_container_width=True,
-        hide_index=True,
-        height=table_height,
-        column_order=active_cols, # <--- Uses the active list logic
-        column_config=col_config,
-        disabled=["#", "Name", "Sector"] + num_cols + fund_cols,
-        key="data_editor"
+        use_container_width=True, hide_index=True, height=(len(df_display)+1)*35+3,
+        column_order=active_cols, column_config=col_config,
+        disabled=["#", "Name", "Sector"] + num_cols + fund_cols, key="data_editor"
     )
 
-    # Fundamental Trigger
-    changed_rows = edited_df[edited_df["Get Info?"] == True]
+    # Trigger
+    changed_rows = edited_df[edited_df.get("Get Info?", pd.Series([False]*len(edited_df))) == True]
     if not changed_rows.empty:
         with st.spinner("Fetching fundamentals..."):
             for index, row in changed_rows.iterrows():
@@ -380,6 +323,5 @@ if not df.empty:
                 if sec: st.session_state.market_df.loc[mask, 'Sector'] = sec
                 st.session_state.market_df.loc[mask, 'Get Info?'] = False
         st.rerun()
-
 else:
-    st.warning("No data found.")
+    st.warning("No data found (or Rate Limit hit). Wait 60s and try again.")
