@@ -8,15 +8,15 @@ from tickers import MASTER_MAP
 # ----------------------------------------------------
 # 1. PAGE CONFIGURATION & CSS
 # ----------------------------------------------------
-st.set_page_config(page_title="Market Monitor Pro", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Market Monitor", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
         .block-container {
             padding-top: 1rem;
-            padding-bottom: 0rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
+            padding-bottom: 2rem;
+            padding-left: 0.5rem;
+            padding-right: 0.5rem;
         }
         /* Make the first column (index) tiny */
         [data-testid="stDataFrame"] div[role="grid"] div[role="row"] > div:nth-child(1) {
@@ -25,9 +25,10 @@ st.markdown("""
         [data-testid="stDataFrame"] div[role="grid"] div[role="rowgroup"] > div[role="row"] > div:nth-child(1) {
             min-width: 30px !important; max-width: 40px !important; width: 40px !important; flex: 0 0 40px !important;
         }
-        /* Tighten sidebar spacing */
-        section[data-testid="stSidebar"] .block-container {
-            padding-top: 2rem;
+        /* Adjust header text size */
+        h1 {
+            font-size: 1.8rem !important;
+            margin-bottom: 0rem !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -114,7 +115,7 @@ def get_live_dashboard_optimized(tickers, baselines):
     
     start_time = time.time()
     
-    # --- PHASE 1: STANDARD FETCH (.NS) ---
+    # --- PHASE 1: NSE FETCH ---
     chunk_size = 100
     progress_bar = st.sidebar.progress(0, text="Fetching Stocks (NSE)...")
     failed_phase_1 = [] 
@@ -144,7 +145,7 @@ def get_live_dashboard_optimized(tickers, baselines):
         except:
             failed_phase_1.extend(batch)
             
-    # --- PHASE 2: BSE FALLBACK REPAIR ---
+    # --- PHASE 2: BSE FALLBACK ---
     fallback_map = {} 
     retry_batch = []
     
@@ -153,8 +154,6 @@ def get_live_dashboard_optimized(tickers, baselines):
             bse_t = t.replace('.NS', '.BO')
             retry_batch.append(bse_t)
             fallback_map[bse_t] = t
-        else:
-            pass
 
     if retry_batch:
         progress_bar.progress(1.0, text=f"Retrying {len(retry_batch)} stocks on BSE...")
@@ -221,6 +220,8 @@ def process_ticker_data(ticker_to_use, df, baselines, original_id):
 # ----------------------------------------------------
 # 4. MAIN EXECUTION
 # ----------------------------------------------------
+
+# --- SIDEBAR CONTROLS ---
 st.sidebar.title("Controls")
 
 if 'market_df' not in st.session_state: st.session_state.market_df = pd.DataFrame()
@@ -228,21 +229,23 @@ if 'load_time' not in st.session_state: st.session_state.load_time = 0.0
 if 'usd_rate' not in st.session_state: st.session_state.usd_rate = get_usd_rate()
 if 'missing_stocks' not in st.session_state: st.session_state.missing_stocks = []
 
-# Update Button
 if st.sidebar.button("🔄 Update Prices"):
     st.session_state.market_df = pd.DataFrame()
     st.session_state.missing_stocks = []
     st.cache_data.clear()
     st.rerun()
 
-# Filters
 st.sidebar.subheader("Filters")
 search_query = st.sidebar.text_input("🔍 Search Stock/Sector", "")
+
+# 📱 Mobile View Checkbox Added Here
+mobile_view = st.sidebar.checkbox("📱 Mobile Simplified View", value=False)
+
 view_option = st.sidebar.radio("Trend:", ["All", "Green Only", "Red Only"], index=0)
 near_high = st.sidebar.checkbox("Near 52W High (<5%)")
 near_low = st.sidebar.checkbox("Near 52W Low (<10%)")
 
-# --- LOAD DATA (Logic) ---
+# --- LOAD DATA ---
 if st.session_state.market_df.empty:
     with st.spinner("Loading Market Data..."):
         baselines = get_baselines_bulk(DEFAULT_TICKERS)
@@ -250,7 +253,6 @@ if st.session_state.market_df.empty:
         st.session_state.market_df = df
         st.session_state.load_time = duration
         
-        # Calculate Missing
         loaded_ids = set()
         for t in df['TickerID'].tolist():
             loaded_ids.add(t) 
@@ -261,22 +263,17 @@ if st.session_state.market_df.empty:
 
 df = st.session_state.market_df.copy()
 
-# --- SIDEBAR STATUS SECTION ---
+# --- SIDEBAR STATUS ---
 if not df.empty:
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 System Status")
     
-    # 1. Counts
     total = len(DEFAULT_TICKERS)
     updated = len(df)
     st.sidebar.metric("Stocks Updated", f"{updated} / {total}")
-    
-    # 2. Timer
     st.sidebar.metric("Load Time", f"{st.session_state.load_time:.2f}s")
     
-    # 3. Nifty 50 (Robust Fetch)
     try:
-        # Use Ticker object specifically for Nifty to avoid dataframe multi-index issues
         nifty = yf.Ticker("^NSEI")
         hist = nifty.history(period="2d")
         if not hist.empty:
@@ -285,16 +282,24 @@ if not df.empty:
             nifty_chg = ((curr_nifty - prev_nifty)/prev_nifty)*100
             st.sidebar.metric("Nifty 50", f"{curr_nifty:.0f}", f"{nifty_chg:+.2f}%")
         else:
-            st.sidebar.metric("Nifty 50", "N/A")
-    except Exception as e:
+            indices_df = yf.download("^NSEI", period="2d", progress=False)
+            if not indices_df.empty:
+                 curr_nifty = indices_df['Close'].iloc[-1]
+                 prev_nifty = indices_df['Close'].iloc[-2]
+                 nifty_chg = ((curr_nifty - prev_nifty)/prev_nifty)*100
+                 st.sidebar.metric("Nifty 50", f"{curr_nifty:.0f}", f"{nifty_chg:+.2f}%")
+            else:
+                st.sidebar.metric("Nifty 50", "N/A")
+    except:
         st.sidebar.metric("Nifty 50", "Err")
 
-# --- SIDEBAR MISSING STOCKS ---
 if st.session_state.missing_stocks:
     with st.sidebar.expander(f"⚠️ Failed ({len(st.session_state.missing_stocks)})", expanded=False):
         st.text("\n".join(st.session_state.missing_stocks))
 
-# --- MAIN TABLE DISPLAY ---
+# --- MAIN PAGE ---
+st.title("Market Monitor")
+
 if not df.empty:
     # Filter Logic
     if search_query:
@@ -317,7 +322,7 @@ if not df.empty:
 
     styled_df = df.style.map(color_change, subset=['Change %', 'Since Jan20 (%)'])
 
-    # Config
+    # Column Config
     num_cols = ["LTP", "Change %", "52W High", "Down from High (%)", "52W Low", "Up from Low (%)", "Since Jan20 (%)"]
     fund_cols = ["Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
     
@@ -334,13 +339,24 @@ if not df.empty:
     for col in fund_cols:
         col_config[col] = st.column_config.NumberColumn(col, width="small", format="%.2f")
 
+    # Dynamic Column Selection Logic
+    if mobile_view:
+        # Simplified View
+        active_cols = ["#", "Name", "LTP", "Change %"]
+    else:
+        # Full Desktop View
+        active_cols = ["#", "Name", "Sector"] + num_cols + ["Get Info?"] + fund_cols
+
+    # Table Height Calc
+    table_height = (len(df) + 1) * 35 + 3
+
     # Render Table
     edited_df = st.data_editor(
         styled_df, 
         use_container_width=True,
         hide_index=True,
-        height=800,
-        column_order=["#", "Name", "Sector"] + num_cols + ["Get Info?"] + fund_cols,
+        height=table_height,
+        column_order=active_cols, # <--- Uses the active list logic
         column_config=col_config,
         disabled=["#", "Name", "Sector"] + num_cols + fund_cols,
         key="data_editor"
