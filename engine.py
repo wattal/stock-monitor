@@ -22,31 +22,40 @@ def get_usd_rate():
     except:
         return 84.5
 
-# --- BLOCK E2: DATA FETCHING ---
+# --- BLOCK E2: UPDATED DATA FETCHING ---
 @st.cache_data(ttl=28800)
-def download_bulk_history(tickers):
+def download_bulk_history(tickers, period="2y"):
+    """Fetches history based on device mode (2y for Desktop, 1mo for Mobile)."""
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
-    return yf.download(list(set(cleaned)), period="2y", group_by="ticker", progress=False, threads=True)
+    return yf.download(list(set(cleaned)), period=period, group_by="ticker", progress=False, threads=True)
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
-    from tickers import MASTER_MAP
     baselines = {}
     cut = pd.to_datetime(ref_date).tz_localize(None) if ref_date else None
     for t in tickers:
         try:
             df = raw_data[t].dropna(subset=["Close"])
             if df.empty: continue
-            rec_52w, rec_15d, rec_7d = df.iloc[-252:], df.iloc[-15:], df.iloc[-7:]
+            
+            # Slicing for various timeframes
+            rec_30d = df.iloc[-22:] if len(df) >= 22 else df
+            rec_15d = df.iloc[-11:] if len(df) >= 11 else df
+            rec_7d = df.iloc[-5:] if len(df) >= 5 else df
+            
+            # Reference Low Logic
             rl = np.nan
             if cut:
                 since_df = df[df.index.tz_localize(None) >= cut]
                 if not since_df.empty: rl = float(since_df["Low"].min())
+            
             baselines[t] = {
-                "52H": float(rec_52w["High"].max()), "52L": float(rec_52w["Low"].min()),
+                "30H": float(rec_30d["High"].max()), "30L": float(rec_30d["Low"].min()),
                 "15H": float(rec_15d["High"].max()), "15L": float(rec_15d["Low"].min()),
                 "7H": float(rec_7d["High"].max()), "7L": float(rec_7d["Low"].min()),
-                "MA100": float(df["Close"].iloc[-100:].mean()),
-                "RSI": calculate_rsi(df["Close"]).iloc[-1],
+                "52H": float(df["High"].max()) if len(df) > 200 else np.nan,
+                "52L": float(df["Low"].max()) if len(df) > 200 else np.nan,
+                "MA100": float(df["Close"].iloc[-100:].mean()) if len(df) > 100 else np.nan,
+                "RSI": calculate_rsi(df["Close"]).iloc[-1] if len(df) > 30 else 50,
                 "AvgVol": float(df["Volume"].iloc[-10:].mean()), "RefLow": rl,
             }
         except: pass
