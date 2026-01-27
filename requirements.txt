@@ -1,4 +1,6 @@
 streamlit
+streamlit-js-eval
 yfinance
 pandas
 numpy
+
