@@ -26,15 +26,22 @@ def get_usd_rate():
 # --- BLOCK E2: UPDATED DATA FETCHING (Mobile Friendly) ---
 @st.cache_data(ttl=600) # Reduced TTL to 10 mins for better fresh data
 def download_bulk_history(tickers, period="1mo"):
+    import yfinance as yf
+    # Force a fresh session to fix the "Invalid Crumb" error
+    yf.set_tz_cache_location("cache") 
+    
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
-    try:
-        data = yf.download(list(set(cleaned)), period=period, group_by="ticker", progress=False, threads=True)
-        if data.empty:
-            st.error("Yahoo Finance Rate Limit Hit. Try again in 15 minutes.")
-        return data
-    except Exception as e:
-        st.error(f"Download failed: {str(e)}")
-        return pd.DataFrame()
+    
+    # Using 'threads=False' for the initial fetch can sometimes bypass rate limits 
+    # because it doesn't look like a DDOS attack to Yahoo's servers.
+    data = yf.download(
+        list(set(cleaned)), 
+        period=period, 
+        group_by="ticker", 
+        progress=False, 
+        threads=False 
+    )
+    return data
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
     baselines = {}
