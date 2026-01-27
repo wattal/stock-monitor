@@ -3,11 +3,12 @@ import pandas as pd
 import numpy as np
 import time
 import streamlit as st
+import os
 
 # --- BLOCK E1: TECHNICAL CALCULATIONS ---
 def calculate_rsi(series, period=14):
     if series is None or len(series) < period:
-        return 50
+        return pd.Series([50] * len(series)) if series is not None else 50
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -22,25 +23,34 @@ def get_usd_rate():
     except:
         return 84.5
 
-# --- BLOCK E2: UPDATED DATA FETCHING ---
-@st.cache_data(ttl=28800)
-def download_bulk_history(tickers, period="2y"):
-    """Fetches history based on device mode (2y for Desktop, 1mo for Mobile)."""
+# --- BLOCK E2: UPDATED DATA FETCHING (Mobile Friendly) ---
+@st.cache_data(ttl=600) # Reduced TTL to 10 mins for better fresh data
+def download_bulk_history(tickers, period="1mo"):
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
-    return yf.download(list(set(cleaned)), period=period, group_by="ticker", progress=False, threads=True)
+    try:
+        data = yf.download(list(set(cleaned)), period=period, group_by="ticker", progress=False, threads=True)
+        if data.empty:
+            st.error("Yahoo Finance Rate Limit Hit. Try again in 15 minutes.")
+        return data
+    except Exception as e:
+        st.error(f"Download failed: {str(e)}")
+        return pd.DataFrame()
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
     baselines = {}
     cut = pd.to_datetime(ref_date).tz_localize(None) if ref_date else None
+    
     for t in tickers:
         try:
-            df = raw_data[t].dropna(subset=["Close"])
+            # Handle both Single and Multi-Index dataframes from yfinance
+            df = raw_data[t].dropna(subset=["Close"]) if t in raw_data else pd.DataFrame()
             if df.empty: continue
             
-            # Slicing for various timeframes
-            rec_30d = df.iloc[-22:] if len(df) >= 22 else df
-            rec_15d = df.iloc[-11:] if len(df) >= 11 else df
-            rec_7d = df.iloc[-5:] if len(df) >= 5 else df
+            # SAFE SLICING: Check length before slicing to avoid index errors on short history (Mobile)
+            data_len = len(df)
+            rec_30d = df.iloc[-min(22, data_len):] 
+            rec_15d = df.iloc[-min(11, data_len):]
+            rec_7d = df.iloc[-min(5, data_len):]
             
             # Reference Low Logic
             rl = np.nan
@@ -48,18 +58,26 @@ def calculate_baselines(tickers, raw_data, ref_date=None):
                 since_df = df[df.index.tz_localize(None) >= cut]
                 if not since_df.empty: rl = float(since_df["Low"].min())
             
+            # 52W High/Low and MA100 will return NaN on '1mo' period (intended for mobile speed)
             baselines[t] = {
-                "30H": float(rec_30d["High"].max()), "30L": float(rec_30d["Low"].min()),
-                "15H": float(rec_15d["High"].max()), "15L": float(rec_15d["Low"].min()),
-                "7H": float(rec_7d["High"].max()), "7L": float(rec_7d["Low"].min()),
-                "52H": float(df["High"].max()) if len(df) > 200 else np.nan,
-                "52L": float(df["Low"].max()) if len(df) > 200 else np.nan,
-                "MA100": float(df["Close"].iloc[-100:].mean()) if len(df) > 100 else np.nan,
-                "RSI": calculate_rsi(df["Close"]).iloc[-1] if len(df) > 30 else 50,
-                "AvgVol": float(df["Volume"].iloc[-10:].mean()), "RefLow": rl,
+                "30H": float(rec_30d["High"].max()), 
+                "30L": float(rec_30d["Low"].min()),
+                "15H": float(rec_15d["High"].max()), 
+                "15L": float(rec_15d["Low"].min()),
+                "7H": float(rec_7d["High"].max()), 
+                "7L": float(rec_7d["Low"].min()),
+                "52H": float(df["High"].max()) if data_len > 200 else np.nan,
+                "52L": float(df["Low"].min()) if data_len > 200 else np.nan,
+                "MA100": float(df["Close"].iloc[-100:].mean()) if data_len > 100 else np.nan,
+                "RSI": calculate_rsi(df["Close"]).iloc[-1] if data_len > 14 else 50,
+                "AvgVol": float(df["Volume"].iloc[-min(10, data_len):].mean()), 
+                "RefLow": rl,
             }
-        except: pass
+        except Exception as e:
+            continue 
     return baselines
+
+# ... (Keep get_live_data and fetch_fundamentals as they are)
 
 def get_live_data(tickers, baselines, dormant_set, mode="desktop"):
     from tickers import MASTER_MAP
