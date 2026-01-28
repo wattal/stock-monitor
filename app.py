@@ -140,11 +140,14 @@ if st.session_state.market_df.empty:
             st.error(f"Fetch Error: {e}")
             st.info("💡 Pro Tip: If this persists on mobile, try toggling 'Force Desktop View' and back.")
 
-# 7. MAIN TABLE
+# ... (Sections 1 through 6 remain exactly as you have them)
+
+# 7. MAIN TABLE (Corrected & Stable for Mobile)
 if not st.session_state.market_df.empty:
     active = st.session_state.market_df.copy()
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
+    # Apply Filters (Functionality Retained)
     if show_favs: active = active[active["⭐"] == "⭐"]
     if search_q: 
         active = active[active["Name"].str.contains(search_q, case=False) | active["Sector"].str.contains(search_q, case=False)]
@@ -156,21 +159,28 @@ if not st.session_state.market_df.empty:
         elif view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
         elif view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
 
+    # Floating Stars Priority Sort
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
     active.insert(0, "#", range(1, len(active) + 1))
 
+    # Safe Styling Logic: Only style columns that exist in the current view
+    existing_color_cols = [c for c in color_cols if c in active.columns]
+    
+    # Define color formatting
     def apply_color(val):
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
+    # The KEY FIX: 'subset' now only targets columns present in the DataFrame to prevent KeyError
     fmt_cols = color_cols + ["Vol Breakout"]
     if not lite_mode: fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
 
     styled_df = (active[order].style
-                 .applymap(apply_color, subset=[c for c in color_cols if c in active.columns])
+                 .applymap(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=[c for c in fmt_cols if c in active.columns]))
 
+    # Render Table
     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=850,
         column_config={
             "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
@@ -179,9 +189,11 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
+    # Bottom Footer Sync Info
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
 
+    # Background Fundamentals (Desktop Only)
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False):
             f_map = eng.fetch_fundamentals_map(MASTER_TICKERS, eng.get_usd_rate())
