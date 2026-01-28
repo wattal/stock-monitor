@@ -27,19 +27,19 @@ def get_usd_rate():
 @st.cache_data(ttl=600) # Reduced TTL to 10 mins for better fresh data
 def download_bulk_history(tickers, period="1mo"):
     import yfinance as yf
-    # Force a fresh session to fix the "Invalid Crumb" error
-    yf.set_tz_cache_location("cache") 
     
+    # Clean tickers to ensure they have .NS or .BO for Indian markets
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
     
-    # Using 'threads=False' for the initial fetch can sometimes bypass rate limits 
-    # because it doesn't look like a DDOS attack to Yahoo's servers.
+    # SOLUTION: Stop passing a custom session. 
+    # Let YF handle the session internally to satisfy the 'curl_cffi' requirement.
     data = yf.download(
-        list(set(cleaned)), 
+        tickers=list(set(cleaned)), 
         period=period, 
         group_by="ticker", 
         progress=False, 
-        threads=False 
+        threads=True,   # Keeps it fast for your 495 scripts
+        proxy=None      # Ensure no proxy interference on Streamlit Cloud
     )
     return data
 
