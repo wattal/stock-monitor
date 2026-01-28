@@ -28,18 +28,26 @@ def get_usd_rate():
 def download_bulk_history(tickers, period="1mo"):
     import yfinance as yf
     
-    # Clean tickers to ensure they have .NS or .BO
+    # Clean tickers
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
+    ticker_list = list(set(cleaned)) # Create a static copy to prevent 'size changed' error
     
-    # SOLUTION: Use the most stable, minimal set of arguments.
-    # We remove 'proxy' and 'session' to avoid the keyword/identity errors.
+    # Use a lean fetch to avoid Rate Limits on mobile
     data = yf.download(
-        tickers=list(set(cleaned)), 
+        tickers=ticker_list, 
         period=period, 
         group_by="ticker", 
         progress=False, 
-        threads=True   # Vital for handling your 495 scripts quickly
+        threads=True
     )
+    
+    # CRITICAL FIX: Strip timezones immediately to prevent "tz-naive vs tz-aware" crash
+    if not data.empty:
+        try:
+            data.index = data.index.tz_localize(None)
+        except:
+            pass
+            
     return data
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
