@@ -28,18 +28,17 @@ def get_usd_rate():
 def download_bulk_history(tickers, period="1mo"):
     import yfinance as yf
     
-    # Clean tickers to ensure they have .NS or .BO for Indian markets
+    # Clean tickers to ensure they have .NS or .BO
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
     
-    # SOLUTION: Stop passing a custom session. 
-    # Let YF handle the session internally to satisfy the 'curl_cffi' requirement.
+    # SOLUTION: Use the most stable, minimal set of arguments.
+    # We remove 'proxy' and 'session' to avoid the keyword/identity errors.
     data = yf.download(
         tickers=list(set(cleaned)), 
         period=period, 
         group_by="ticker", 
         progress=False, 
-        threads=True,   # Keeps it fast for your 495 scripts
-        proxy=None      # Ensure no proxy interference on Streamlit Cloud
+        threads=True   # Vital for handling your 495 scripts quickly
     )
     return data
 
