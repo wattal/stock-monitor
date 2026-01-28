@@ -142,45 +142,68 @@ if st.session_state.market_df.empty:
 
 # ... (Sections 1 through 6 remain exactly as you have them)
 
-# 7. MAIN TABLE (Corrected & Stable for Mobile)
+# 7. MAIN TABLE (Optimized for Mobile & Hosted Stability)
 if not st.session_state.market_df.empty:
+    # 7.1 SAFE DATA PREP
     active = st.session_state.market_df.copy()
+    
+    # Ensure any comparison columns are timezone-neutral to prevent crash
+    if isinstance(active.index, pd.DatetimeIndex):
+        active.index = active.index.tz_localize(None)
+
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    # Apply Filters (Functionality Retained)
-    if show_favs: active = active[active["⭐"] == "⭐"]
-    if search_q: 
-        active = active[active["Name"].str.contains(search_q, case=False) | active["Sector"].str.contains(search_q, case=False)]
-    if trend_view == "Green": active = active[active["Change %"] > 0]
-    elif trend_view == "Red": active = active[active["Change %"] < 0]
+    # 7.2 APPLY FILTERS (Functionality Retained)
+    if show_favs: 
+        active = active[active["⭐"] == "⭐"]
     
+    if search_q: 
+        active = active[active["Name"].str.contains(search_q, case=False) | 
+                        active["Sector"].str.contains(search_q, case=False)]
+    
+    if trend_view == "Green": 
+        active = active[active["Change %"] > 0]
+    elif trend_view == "Red": 
+        active = active[active["Change %"] < 0]
+    
+    # Extended Filters (Only if columns exist)
     if not lite_mode:
-        if view_filter == "Vol Breakout": active = active[active["Vol Breakout"] >= 1.5]
-        elif view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
-        elif view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
+        if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": 
+            active = active[active["Vol Breakout"] >= 1.5]
+        elif "vs 52W High (%)" in active.columns and view_filter == "Near 52W High (<= 5%)": 
+            active = active[active["vs 52W High (%)"] >= -5]
+        elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": 
+            active = active[active["vs 52W Low (%)"] <= 5]
 
-    # Floating Stars Priority Sort
+    # 7.3 SORTING & INDEXING
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
+    
+    # Clean indexing for fresh display
+    active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # Safe Styling Logic: Only style columns that exist in the current view
+    # 7.4 SAFE STYLING ENGINE
+    # The KEY FIX: Dynamically filter columns to prevent KeyError on Mobile
+    existing_order = [c for c in order if c in active.columns]
     existing_color_cols = [c for c in color_cols if c in active.columns]
     
-    # Define color formatting
+    # Format list: Only format what exists
+    current_fmt_cols = color_cols + ["Vol Breakout"]
+    if not lite_mode: 
+        current_fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
+    existing_fmt_cols = [c for c in current_fmt_cols if c in active.columns]
+
     def apply_color(val):
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
-    # The KEY FIX: 'subset' now only targets columns present in the DataFrame to prevent KeyError
-    fmt_cols = color_cols + ["Vol Breakout"]
-    if not lite_mode: fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
-
-    styled_df = (active[order].style
+    # Apply style only to existing columns
+    styled_df = (active[existing_order].style
                  .applymap(apply_color, subset=existing_color_cols)
-                 .format(precision=1, subset=[c for c in fmt_cols if c in active.columns]))
+                 .format(precision=1, subset=existing_fmt_cols))
 
-    # Render Table
+    # 7.5 RENDER TABLE
     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=850,
         column_config={
             "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
@@ -189,16 +212,23 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # Bottom Footer Sync Info
+    # 7.6 FOOTER & BACKGROUND TASKS
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
-    status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
+    status_footer_placeholder.markdown(
+        f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', 
+        unsafe_allow_html=True
+    )
 
-    # Background Fundamentals (Desktop Only)
+    # Background Fundamentals (Desktop/Full Mode only)
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
-        with st.status("Fetching Fundamentals...", expanded=False):
-            f_map = eng.fetch_fundamentals_map(MASTER_TICKERS, eng.get_usd_rate())
-            st.session_state.fundamentals_time = datetime.datetime.now().strftime("%H:%M")
-            for t, v in f_map.items():
-                for col, val in v.items(): 
-                    st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = val
-            st.rerun()
+        with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
+            try:
+                f_map = eng.fetch_fundamentals_map(MASTER_TICKERS, eng.get_usd_rate())
+                st.session_state.fundamentals_time = datetime.datetime.now().strftime("%H:%M")
+                for t, v in f_map.items():
+                    for col, val in v.items(): 
+                        st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = val
+                fundamental_status.update(label="Fundamentals Updated", state="complete")
+                st.rerun()
+            except Exception as e:
+                fundamental_status.update(label=f"Fundamental Sync Interrupted", state="error")
