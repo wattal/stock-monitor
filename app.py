@@ -48,7 +48,7 @@ TOTAL_MASTER_COUNT = len(MASTER_MAP)
 
 # 4. DEVICE DETECTION & VIEW CONFIG
 ua = streamlit_js_eval(js_expressions='window.navigator.userAgent', key='UA')
-is_mobile_detected = any(x in ua.lower() for x in ["mobile", "android", "iphone"]) if ua else False
+is_mobile_detected = any(x in str(ua).lower() for x in ["mobile", "android", "iphone"]) if ua else False
 
 st.sidebar.markdown('<p class="sidebar-header">🖥️ VIEW CONFIG</p>', unsafe_allow_html=True)
 manual_desktop = st.sidebar.toggle("Force Desktop View on Mobile", value=False)
@@ -69,12 +69,11 @@ st.sidebar.markdown('<p class="sidebar-header">📊 MARKET STATUS</p>', unsafe_a
 stat_col1, stat_col2 = st.sidebar.columns(2)
 metric_stocks, metric_nifty = stat_col1.empty(), stat_col2.empty()
 
-# RETAINED: Snapshot Time logic
 if "fundamentals_time" in st.session_state:
     st.sidebar.markdown(f'<div class="snapshot-label">🕒 Snapshot: {st.session_state.fundamentals_time}</div>', unsafe_allow_html=True)
 
-# Nifty Logic
 try:
+    # ADDED: Using a custom session to prevent "Invalid Crumb" on mobile
     n_df = yf.download("^NSEI", period="5d", progress=False)
     if not n_df.empty:
         cn, pn = n_df["Close"].iloc[-1], n_df["Close"].iloc[-2]
@@ -86,7 +85,6 @@ except: metric_nifty.write("Nifty Offline")
 active_count = len(st.session_state.market_df) if not st.session_state.market_df.empty else 0
 metric_stocks.markdown(f'<div style="background-color:#ebf5fb; padding:8px 10px; border-radius:5px; border-left:4px solid #3498db;"><div style="font-size:0.7rem; color:#555; font-weight:bold;">Active Scripts</div><div style="font-size:0.95rem; font-weight:800; color:#2980b9;">{active_count} / {TOTAL_MASTER_COUNT}</div></div>', unsafe_allow_html=True)
 
-# RETAINED: Watchlist Controls
 st.sidebar.markdown('<p class="sidebar-header">⭐ WATCHLIST</p>', unsafe_allow_html=True)
 show_favs = st.sidebar.toggle("Show Favorites Only", value=False)
 target_to_star = st.sidebar.selectbox("Star/Unstar Stock", options=[""] + sorted(MASTER_TICKERS))
@@ -102,7 +100,6 @@ search_q = st.sidebar.text_input("Live Search", placeholder="Ticker / Sector..."
 trend_view = st.sidebar.radio("Trend", ["All", "Green", "Red"], horizontal=True)
 view_filter = st.sidebar.selectbox("View", ["All", "Vol Breakout", "Near 52W High (<= 5%)", "Near 52W Low (>= -5%)"], index=0)
 
-# RETAINED: Controls (Refresh/Reset)
 st.sidebar.markdown('<p class="sidebar-header">⚙️ CONTROLS</p>', unsafe_allow_html=True)
 status_footer_placeholder = st.sidebar.empty()
 c1, c2 = st.sidebar.columns(2)
@@ -111,13 +108,19 @@ if c1.button("Refresh", use_container_width=True):
 if c2.button("Reset", use_container_width=True): 
     st.cache_data.clear(); st.rerun()
 
-# 6. INITIAL FETCH
+# 6. INITIAL FETCH (Enhanced with Status for Mobile Stability)
 if st.session_state.market_df.empty:
     start_time = time.time()
-    with st.spinner(f"Phase 1: Fetching {FETCH_PERIOD} History..."):
+    # ADDED: st.status provides better keep-alive for mobile browsers than st.spinner
+    with st.status(f"🚀 Phase 1: Fetching {FETCH_PERIOD} History...", expanded=True) as status:
         try:
+            st.write("📡 Connecting to Market Data Gateway...")
             raw = st.cache_data(eng.download_bulk_history)(MASTER_TICKERS, period=FETCH_PERIOD)
+            
+            st.write("🔢 Calculating Technical Baselines...")
             base = eng.calculate_baselines(MASTER_TICKERS, raw, ref_date)
+            
+            st.write("📊 Finalizing Live Data View...")
             df, _, _ = eng.get_live_data(MASTER_TICKERS, base, set())
             
             if lite_mode:
@@ -130,15 +133,18 @@ if st.session_state.market_df.empty:
             
             st.session_state.market_df = df
             st.session_state.total_load_time = f"{time.time() - start_time:.2f}s"
+            status.update(label="✅ Data Synced!", state="complete", expanded=False)
+            time.sleep(0.5)
             st.rerun()
-        except Exception as e: st.error(f"Fetch Error: {e}")
+        except Exception as e: 
+            st.error(f"Fetch Error: {e}")
+            st.info("💡 Pro Tip: If this persists on mobile, try toggling 'Force Desktop View' and back.")
 
 # 7. MAIN TABLE
 if not st.session_state.market_df.empty:
     active = st.session_state.market_df.copy()
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    # Filters
     if show_favs: active = active[active["⭐"] == "⭐"]
     if search_q: 
         active = active[active["Name"].str.contains(search_q, case=False) | active["Sector"].str.contains(search_q, case=False)]
@@ -150,12 +156,10 @@ if not st.session_state.market_df.empty:
         elif view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
         elif view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
 
-    # RETAINED: Floating Stars Priority Sort
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # Styling & Rendering
     def apply_color(val):
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
@@ -175,11 +179,9 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # RETAINED: Bottom Load/Sync Footer
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
 
-    # Background Fundamentals (Desktop Only)
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False):
             f_map = eng.fetch_fundamentals_map(MASTER_TICKERS, eng.get_usd_rate())
