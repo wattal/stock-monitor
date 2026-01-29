@@ -69,11 +69,11 @@ st.sidebar.markdown('<p class="sidebar-header">📊 MARKET STATUS</p>', unsafe_a
 stat_col1, stat_col2 = st.sidebar.columns(2)
 metric_stocks, metric_nifty = stat_col1.empty(), stat_col2.empty()
 
+# RETAINED: Snapshot time label
 if "fundamentals_time" in st.session_state:
     st.sidebar.markdown(f'<div class="snapshot-label">🕒 Snapshot: {st.session_state.fundamentals_time}</div>', unsafe_allow_html=True)
 
 try:
-    # ADDED: Using a custom session to prevent "Invalid Crumb" on mobile
     n_df = yf.download("^NSEI", period="5d", progress=False)
     if not n_df.empty:
         cn, pn = n_df["Close"].iloc[-1], n_df["Close"].iloc[-2]
@@ -108,10 +108,9 @@ if c1.button("Refresh", use_container_width=True):
 if c2.button("Reset", use_container_width=True): 
     st.cache_data.clear(); st.rerun()
 
-# 6. INITIAL FETCH (Enhanced with Status for Mobile Stability)
+# 6. INITIAL FETCH
 if st.session_state.market_df.empty:
     start_time = time.time()
-    # ADDED: st.status provides better keep-alive for mobile browsers than st.spinner
     with st.status(f"🚀 Phase 1: Fetching {FETCH_PERIOD} History...", expanded=True) as status:
         try:
             st.write("📡 Connecting to Market Data Gateway...")
@@ -134,39 +133,29 @@ if st.session_state.market_df.empty:
             st.session_state.market_df = df
             st.session_state.total_load_time = f"{time.time() - start_time:.2f}s"
             status.update(label="✅ Data Synced!", state="complete", expanded=False)
-            time.sleep(0.5)
             st.rerun()
         except Exception as e: 
             st.error(f"Fetch Error: {e}")
-            st.info("💡 Pro Tip: If this persists on mobile, try toggling 'Force Desktop View' and back.")
-
-# ... (Sections 1 through 6 remain exactly as you have them)
 
 # 7. MAIN TABLE (Optimized for Mobile & Hosted Stability)
 if not st.session_state.market_df.empty:
     # 7.1 SAFE DATA PREP
     active = st.session_state.market_df.copy()
     
-    # Ensure any comparison columns are timezone-neutral to prevent crash
+    # Timezone fix for hosted stability
     if isinstance(active.index, pd.DatetimeIndex):
         active.index = active.index.tz_localize(None)
 
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    # 7.2 APPLY FILTERS (Functionality Retained)
-    if show_favs: 
-        active = active[active["⭐"] == "⭐"]
-    
+    # 7.2 APPLY FILTERS
+    if show_favs: active = active[active["⭐"] == "⭐"]
     if search_q: 
         active = active[active["Name"].str.contains(search_q, case=False) | 
                         active["Sector"].str.contains(search_q, case=False)]
+    if trend_view == "Green": active = active[active["Change %"] > 0]
+    elif trend_view == "Red": active = active[active["Change %"] < 0]
     
-    if trend_view == "Green": 
-        active = active[active["Change %"] > 0]
-    elif trend_view == "Red": 
-        active = active[active["Change %"] < 0]
-    
-    # Extended Filters (Only if columns exist)
     if not lite_mode:
         if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": 
             active = active[active["Vol Breakout"] >= 1.5]
@@ -178,17 +167,13 @@ if not st.session_state.market_df.empty:
     # 7.3 SORTING & INDEXING
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
-    
-    # Clean indexing for fresh display
     active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
     # 7.4 SAFE STYLING ENGINE
-    # The KEY FIX: Dynamically filter columns to prevent KeyError on Mobile
     existing_order = [c for c in order if c in active.columns]
     existing_color_cols = [c for c in color_cols if c in active.columns]
     
-    # Format list: Only format what exists
     current_fmt_cols = color_cols + ["Vol Breakout"]
     if not lite_mode: 
         current_fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
@@ -198,7 +183,6 @@ if not st.session_state.market_df.empty:
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
-    # Apply style only to existing columns
     styled_df = (active[existing_order].style
                  .applymap(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=existing_fmt_cols))
@@ -212,14 +196,14 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # 7.6 FOOTER & BACKGROUND TASKS
+    # 7.6 FOOTER LOAD TIME & SYNC INFO
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     status_footer_placeholder.markdown(
         f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', 
         unsafe_allow_html=True
     )
 
-    # Background Fundamentals (Desktop/Full Mode only)
+    # BACKGROUND FUNDAMENTALS
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
             try:
