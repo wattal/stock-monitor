@@ -1,180 +1,201 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import time
 import streamlit as st
-import os
+import datetime
+import pandas as pd
+import yfinance as yf
+import time
+from streamlit_js_eval import streamlit_js_eval
+import engine as eng
+from tickers import MASTER_MAP
 
-# --- BLOCK E1: TECHNICAL CALCULATIONS ---
-def calculate_rsi(series, period=14):
-    if series is None or len(series) < period:
-        return pd.Series([50] * len(series)) if series is not None else 50
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / (loss + 1e-9)
-    return 100 - (100 / (1 + rs))
+# 1. PAGE CONFIG
+st.set_page_config(page_title="Market Monitor v0.5.6", layout="wide")
 
-@st.cache_data(ttl=3600)
-def get_usd_rate():
-    try:
-        df = yf.download("USDINR=X", period="5d", progress=False)
-        return float(df["Close"].iloc[-1])
-    except:
-        return 84.5
+# 2. UI STYLE & BENCHMARK CSS
+st.markdown("""
+    <style>
+    .block-container { max-width: 98% !important; padding: 3.5rem 1rem 1rem 1rem !important; }
+    section[data-testid="stSidebar"] { background-color: #f1f3f6 !important; }
+    .sidebar-header {
+        font-size: 0.85rem !important; font-weight: 800 !important; color: #1e3a8a !important;
+        text-transform: uppercase; letter-spacing: 1px; padding: 10px 5px 5px 0px;
+        margin-top: 1.2rem !important; border-bottom: 2px solid #3b82f6; display: block;
+    }
+    .snapshot-label {
+        font-size: 0.75rem; font-weight: 700; color: #b91c1c; background-color: #fee2e2;
+        padding: 4px 10px; border-radius: 6px; margin-top: 10px; display: inline-block; border: 1px solid #fecaca;
+    }
+    [data-testid="stDataEditor"] div[role="columnheader"], [data-testid="stDataFrame"] div[role="columnheader"] {
+        height: 105px !important; min-height: 105px !important;
+    }
+    [data-testid="stDataEditor"] div[role="columnheader"] p, [data-testid="stDataFrame"] div[role="columnheader"] p {
+        white-space: normal !important; word-wrap: break-word !important; line-height: 1.1 !important;
+        font-size: 0.72rem !important; text-align: center !important; overflow: visible !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- BLOCK E2: UPDATED DATA FETCHING (Mobile Friendly) ---
-@st.cache_data(ttl=600) # Reduced TTL to 10 mins for better fresh data
-def download_bulk_history(tickers, period="1mo"):
-    import yfinance as yf
-    import time
-    
-    # 1. Standardize and filter out failing tickers
-    blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO"]
-    cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
-               for t in tickers if t not in blacklist]
-    ticker_list = list(set(cleaned))
-    
-    all_chunks = []
-    chunk_size = 30 # Smaller chunks are safer for hosted environments
-    
-    for i in range(0, len(ticker_list), chunk_size):
-        chunk = ticker_list[i : i + chunk_size]
+# 3. ROBUST INITIALIZATION
+if "market_df" not in st.session_state: st.session_state.market_df = pd.DataFrame()
+if "watchlist" not in st.session_state: st.session_state.watchlist = eng.load_watchlist()
+if "update_counter" not in st.session_state: st.session_state.update_counter = 0
+
+MASTER_TICKERS = list(MASTER_MAP.keys())
+TOTAL_MASTER_COUNT = len(MASTER_MAP)
+
+# 4. DEVICE DETECTION & VIEW CONFIG
+ua = streamlit_js_eval(js_expressions='window.navigator.userAgent', key='UA')
+is_mobile_detected = any(x in str(ua).lower() for x in ["mobile", "android", "iphone"]) if ua else False
+
+st.sidebar.markdown('<p class="sidebar-header">🖥️ VIEW CONFIG</p>', unsafe_allow_html=True)
+manual_desktop = st.sidebar.toggle("Force Desktop View on Mobile", value=False)
+lite_mode = is_mobile_detected and not manual_desktop
+
+if lite_mode:
+    FETCH_PERIOD = "1mo"
+    order = ["#", "Name", "Sector", "LTP", "Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 30D High (%)", "vs 30D Low (%)"]
+    color_cols = ["Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 30D High (%)", "vs 30D Low (%)"]
+    st.sidebar.info("📱 Mobile Lite Mode (30-Day Fetch)")
+else:
+    FETCH_PERIOD = "2y"
+    order = ["⭐", "#", "Name", "Sector", "LTP", "Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 52W High (%)", "vs 52W Low (%)", "Up/Low since", "RSI (14)", "Vol Breakout", "vs 100DMA (%)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
+    color_cols = ["Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 52W High (%)", "vs 52W Low (%)", "Up/Low since", "vs 100DMA (%)"]
+
+# 5. SIDEBAR RENDERING
+st.sidebar.markdown('<p class="sidebar-header">📊 MARKET STATUS</p>', unsafe_allow_html=True)
+stat_col1, stat_col2 = st.sidebar.columns(2)
+metric_stocks, metric_nifty = stat_col1.empty(), stat_col2.empty()
+
+if "fundamentals_time" in st.session_state:
+    st.sidebar.markdown(f'<div class="snapshot-label">🕒 Snapshot: {st.session_state.fundamentals_time}</div>', unsafe_allow_html=True)
+
+try:
+    n_df = yf.download("^NSEI", period="5d", progress=False)
+    if not n_df.empty:
+        cn, pn = n_df["Close"].iloc[-1], n_df["Close"].iloc[-2]
+        chg_pct = ((cn - pn) / pn) * 100
+        clr = "#27ae60" if chg_pct >= 0 else "#e74c3c"
+        metric_nifty.markdown(f'<div style="background-color:#fff; padding:8px 10px; border-radius:5px; border-left:4px solid {clr};"><div style="font-size:0.7rem; color:#555; font-weight:bold;">NIFTY 50</div><div style="display:flex; justify-content:space-between;"><span style="font-size:0.95rem; font-weight:800;">{cn:.0f}</span><span style="font-size:0.85rem; font-weight:700; color:{clr};">{chg_pct:+.2f}%</span></div></div>', unsafe_allow_html=True)
+except: metric_nifty.write("Nifty Offline")
+
+active_count = len(st.session_state.market_df) if not st.session_state.market_df.empty else 0
+metric_stocks.markdown(f'<div style="background-color:#ebf5fb; padding:8px 10px; border-radius:5px; border-left:4px solid #3498db;"><div style="font-size:0.7rem; color:#555; font-weight:bold;">Active Scripts</div><div style="font-size:0.95rem; font-weight:800; color:#2980b9;">{active_count} / {TOTAL_MASTER_COUNT}</div></div>', unsafe_allow_html=True)
+
+st.sidebar.markdown('<p class="sidebar-header">⭐ WATCHLIST</p>', unsafe_allow_html=True)
+show_favs = st.sidebar.toggle("Show Favorites Only", value=False)
+target_to_star = st.sidebar.selectbox("Star/Unstar Stock", options=[""] + sorted(MASTER_TICKERS))
+if st.sidebar.button("Update Star Status", use_container_width=True) and target_to_star:
+    is_adding = target_to_star not in st.session_state.watchlist
+    eng.save_to_watchlist(target_to_star, add=is_adding)
+    st.session_state.watchlist = eng.load_watchlist()
+    st.rerun()
+
+st.sidebar.markdown('<p class="sidebar-header">🔍 DATA FILTERS</p>', unsafe_allow_html=True)
+ref_date = st.sidebar.date_input("Ref Date", value=datetime.date(2023, 12, 31))
+search_q = st.sidebar.text_input("Live Search", placeholder="Ticker / Sector...")
+trend_view = st.sidebar.radio("Trend", ["All", "Green", "Red"], horizontal=True)
+view_filter = st.sidebar.selectbox("View", ["All", "Vol Breakout", "Near 52W High (<= 5%)", "Near 52W Low (>= -5%)"], index=0)
+
+st.sidebar.markdown('<p class="sidebar-header">⚙️ CONTROLS</p>', unsafe_allow_html=True)
+status_footer_placeholder = st.sidebar.empty()
+c1, c2 = st.sidebar.columns(2)
+if c1.button("Refresh", use_container_width=True): 
+    st.session_state.market_df = pd.DataFrame(); st.rerun()
+if c2.button("Reset", use_container_width=True): 
+    st.cache_data.clear(); st.rerun()
+
+# 6. INITIAL FETCH
+if st.session_state.market_df.empty:
+    start_time = time.time()
+    with st.status(f"🚀 Phase 1: Fetching {FETCH_PERIOD} History...", expanded=True) as status:
         try:
-            # We let YF handle the internal session to fix 'Invalid Crumb'
-            data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
-            if not data.empty:
-                all_chunks.append(data)
-            time.sleep(0.7) # Brief pause to remain 'human' to the server
-        except Exception:
-            continue
+            st.write("📡 Connecting to Market Data Gateway...")
+            raw = st.cache_data(eng.download_bulk_history)(MASTER_TICKERS, period=FETCH_PERIOD)
+            st.write("🔢 Calculating Technical Baselines...")
+            base = eng.calculate_baselines(MASTER_TICKERS, raw, ref_date)
+            st.write("📊 Finalizing Live Data View...")
+            df, _, _ = eng.get_live_data(MASTER_TICKERS, base, set())
+            
+            if lite_mode:
+                for x in MASTER_TICKERS:
+                    if x in base and not df.loc[df['TickerID']==x].empty:
+                        ltp = df.loc[df['TickerID']==x, 'LTP'].values[0]
+                        h30, l30 = base[x].get('30H'), base[x].get('30L')
+                        df.loc[df['TickerID']==x, "vs 30D High (%)"] = ((ltp - h30)/h30)*100 if h30 else 0
+                        df.loc[df['TickerID']==x, "vs 30D Low (%)"] = ((ltp - l30)/l30)*100 if l30 else 0
+            
+            st.session_state.market_df = df
+            st.session_state.total_load_time = f"{time.time() - start_time:.2f}s"
+            status.update(label="✅ Data Synced!", state="complete", expanded=False)
+            st.rerun()
+        except Exception as e: st.error(f"Fetch Error: {e}")
 
-    if not all_chunks: return pd.DataFrame()
-
-    full_df = pd.concat(all_chunks, axis=1)
+# 7. MAIN TABLE (Corrected & Stable for Mobile)
+if not st.session_state.market_df.empty:
     
-    # 2. CRITICAL: Strip timezones to prevent the DatetimeIndex crash
-    if not full_df.empty:
-        full_df.index = full_df.index.tz_localize(None)
-        
-    return full_df
-
-def calculate_baselines(tickers, raw_data, ref_date=None):
-    baselines = {}
-    cut = pd.to_datetime(ref_date).tz_localize(None) if ref_date else None
+    # 7.1 SAFE DATA PREP & TIMEZONE FIX
+    active = st.session_state.market_df.copy()
+    if isinstance(active.index, pd.DatetimeIndex):
+        active.index = active.index.tz_localize(None) # Fix for hosted link
+    active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    for t in tickers:
-        try:
-            # Handle both Single and Multi-Index dataframes from yfinance
-            df = raw_data[t].dropna(subset=["Close"]) if t in raw_data else pd.DataFrame()
-            if df.empty: continue
-            
-            # SAFE SLICING: Check length before slicing to avoid index errors on short history (Mobile)
-            data_len = len(df)
-            rec_30d = df.iloc[-min(22, data_len):] 
-            rec_15d = df.iloc[-min(11, data_len):]
-            rec_7d = df.iloc[-min(5, data_len):]
-            
-            # Reference Low Logic
-            rl = np.nan
-            if cut:
-                since_df = df[df.index.tz_localize(None) >= cut]
-                if not since_df.empty: rl = float(since_df["Low"].min())
-            
-            # 52W High/Low and MA100 will return NaN on '1mo' period (intended for mobile speed)
-            baselines[t] = {
-                "30H": float(rec_30d["High"].max()), 
-                "30L": float(rec_30d["Low"].min()),
-                "15H": float(rec_15d["High"].max()), 
-                "15L": float(rec_15d["Low"].min()),
-                "7H": float(rec_7d["High"].max()), 
-                "7L": float(rec_7d["Low"].min()),
-                "52H": float(df["High"].max()) if data_len > 200 else np.nan,
-                "52L": float(df["Low"].min()) if data_len > 200 else np.nan,
-                "MA100": float(df["Close"].iloc[-100:].mean()) if data_len > 100 else np.nan,
-                "RSI": calculate_rsi(df["Close"]).iloc[-1] if data_len > 14 else 50,
-                "AvgVol": float(df["Volume"].iloc[-min(10, data_len):].mean()), 
-                "RefLow": rl,
-            }
-        except Exception as e:
-            continue 
-    return baselines
-
-# ... (Keep get_live_data and fetch_fundamentals as they are)
-
-def get_live_data(tickers, baselines, dormant_set, mode="desktop"):
-    from tickers import MASTER_MAP
-    active = [t for t in tickers if t not in dormant_set]
-    rows, failed = [], []
-    if not active: return pd.DataFrame(), 0, []
-    data = yf.download(active, period="5d", group_by="ticker", progress=False, threads=True)
-    for t in active:
-        try:
-            df_t = data[t] if len(active) > 1 else data
-            if not df_t.empty:
-                valid = df_t.dropna(subset=["Close"])
-                p, prev = float(valid["Close"].iloc[-1]), float(valid["Close"].iloc[-2]) if len(valid) > 1 else p
-                b = baselines.get(t, {})
-                get_pct = lambda val, base: (((val - base) / base) * 100 if base and not pd.isna(base) else np.nan)
-                rows.append({
-                    "Name": MASTER_MAP[t]["Name"], "LTP": p, "Change %": ((p - prev) / prev) * 100,
-                    "vs 7D High (%)": get_pct(p, b.get("7H")), "vs 7D Low (%)": get_pct(p, b.get("7L")),
-                    "vs 15D High (%)": get_pct(p, b.get("15H")), "vs 15D Low (%)": get_pct(p, b.get("15L")),
-                    "vs 52W High (%)": get_pct(p, b.get("52H")), "vs 52W Low (%)": get_pct(p, b.get("52L")),
-                    "Up/Low since": get_pct(p, b.get("RefLow")), "RSI (14)": b.get("RSI", 50),
-                    "Vol Breakout": float(valid["Volume"].iloc[-1]) / b.get("AvgVol", 1) if b.get("AvgVol", 1) > 0 else 1.0,
-                    "vs 100DMA (%)": get_pct(p, b.get("MA100")), "Sector": MASTER_MAP[t]["Sector"],
-                    "TickerID": t, "Market Cap ($M)": np.nan, "PE Ratio": np.nan, "PB Ratio": np.nan, "Div Yield (%)": np.nan, "EPS": np.nan,
-                })
-        except: failed.append(t)
-    return pd.DataFrame(rows), 0, list(set(failed))
-
-@st.cache_data(ttl=86400)
-def fetch_fundamentals_map(tickers, usd_rate):
-    results = {}
-    for t in tickers:
-        try:
-            info = yf.Ticker(t).info
-            mcap = info.get("marketCap", np.nan)
-            curr = info.get("currency", "INR")
-            
-            if not pd.isna(mcap):
-                mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
-            
-            # --- THE CRITICAL FIX FOR INFINITY ERRORS ---
-            def clean_val(val):
-                if val is None or str(val).lower() in ['inf', 'infinity']:
-                    return np.nan
-                try:
-                    return float(val)
-                except:
-                    return np.nan
-
-            results[t] = {
-                "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
-                "PE Ratio": clean_val(info.get("trailingPE")),
-                "PB Ratio": clean_val(info.get("priceToBook")),
-                "Div Yield (%)": (info.get("dividendYield", 0) * 100) if info.get("dividendYield") else np.nan,
-                "EPS": clean_val(info.get("trailingEps"))
-            }
-        except: continue
-    return results
+    # 7.2 APPLY FILTERS
+    if show_favs: active = active[active["⭐"] == "⭐"]
+    if search_q: active = active[active["Name"].str.contains(search_q, case=False) | active["Sector"].str.contains(search_q, case=False)]
+    if trend_view == "Green": active = active[active["Change %"] > 0]
+    elif trend_view == "Red": active = active[active["Change %"] < 0]
     
+    if not lite_mode:
+        if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": active = active[active["Vol Breakout"] >= 1.5]
+        elif "vs 52W High (%)" in active.columns and view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
+        elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
+
+    # 7.3 SORTING & INDEXING
+    active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
+    active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
+    active = active.reset_index(drop=True)
+    active.insert(0, "#", range(1, len(active) + 1))
+
+    # 7.4 SAFE STYLING ENGINE
+    existing_order = [c for c in order if c in active.columns]
+    existing_color_cols = [c for c in color_cols if c in active.columns]
     
-import os
+    current_fmt_cols = color_cols + ["Vol Breakout"]
+    if not lite_mode: current_fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
+    existing_fmt_cols = [c for c in current_fmt_cols if c in active.columns]
 
-def load_watchlist():
-    """Reads saved tickers from a local text file."""
-    if not os.path.exists("watchlist.txt"):
-        return []
-    with open("watchlist.txt", "r") as f:
-        return [line.strip() for line in f.readlines() if line.strip()]
+    def apply_color(val):
+        if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
+        return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
-def save_to_watchlist(ticker, add=True):
-    """Adds or removes a ticker from the permanent file."""
-    current = set(load_watchlist())
-    if add: current.add(ticker)
-    else: current.discard(ticker)
-    with open("watchlist.txt", "w") as f:
-        for t in sorted(current):
-            f.write(f"{t}\n")
+    # Correcting .applymap to .map as per server logs [cite: 23]
+    styled_df = (active[existing_order].style
+                 .map(apply_color, subset=existing_color_cols)
+                 .format(precision=1, subset=existing_fmt_cols))
+
+    # 7.5 RENDER TABLE
+    # Correcting width to 'stretch' for mobile responsiveness [cite: 24, 29]
+    st.dataframe(styled_df, width="stretch", hide_index=True, height=850,
+        column_config={
+            "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
+            "#": st.column_config.NumberColumn("#", width=35, pinned=True),
+            "Name": st.column_config.TextColumn("Name", width=180, pinned=True),
+            "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
+        })
+
+    # 7.6 FOOTER & BACKGROUND TASKS
+    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+    status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
+
+    if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
+        with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
+            try:
+                f_map = eng.fetch_fundamentals_map(MASTER_TICKERS, eng.get_usd_rate())
+                st.session_state.fundamentals_time = datetime.datetime.now().strftime("%H:%M")
+                for t, v in f_map.items():
+                    for col, val in v.items(): 
+                        # Ensuring data is numeric before setting to prevent 'Infinity' crash [cite: 32, 45]
+                        st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = v[col]
+                fundamental_status.update(label="Fundamentals Updated", state="complete")
+                st.rerun()
+            except Exception as e:
+                fundamental_status.update(label=f"Fundamental Sync Interrupted", state="error")
