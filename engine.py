@@ -19,24 +19,25 @@ def calculate_rsi(series, period=14):
 def get_usd_rate():
     try:
         df = yf.download("USDINR=X", period="5d", progress=False)
-        return float(df["Close"].iloc[-1]) # Fixed iloc warning [cite: 25]
+        return float(df["Close"].iloc[-1])
     except:
         return 84.5
 
 # --- BLOCK E2: DATA FETCHING ---
 @st.cache_data(ttl=600)
 def download_bulk_history(tickers, period="1mo"):
-    # 1. Hard Blacklist from your logs [cite: 16, 17, 21, 40, 65-69]
+    # Hard blacklist for tickers that are delisted or causing timeouts [cite: 16, 21, 40]
     blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", "FERMENTA.NS", "MANGCHEFER.NS"]
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
                for t in tickers if t not in blacklist]
     ticker_list = list(set(cleaned))
     
     all_chunks = []
-    chunk_size = 25 # Smaller batches to avoid Rate Limits
+    chunk_size = 25 
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
+            # threads=False prevents the 'NoneType' and 'Dictionary Size' errors on shared IPs [cite: 16, 17]
             data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
             if not data.empty:
                 all_chunks.append(data)
@@ -46,7 +47,8 @@ def download_bulk_history(tickers, period="1mo"):
     if not all_chunks: return pd.DataFrame()
     full_df = pd.concat(all_chunks, axis=1)
     if not full_df.empty:
-        full_df.index = full_df.index.tz_localize(None) # Fix timezone crash
+        # Strip timezones for hosted server compatibility
+        full_df.index = full_df.index.tz_localize(None)
     return full_df
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
@@ -104,7 +106,8 @@ def get_live_data(tickers, baselines, dormant_set):
 @st.cache_data(ttl=86400)
 def fetch_fundamentals_map(tickers, usd_rate):
     results = {}
-    def clean_val(val): # THE FIX FOR ARROW CRASH [cite: 32, 50, 57]
+    def clean_val(val): 
+        # Prevents Arrow rendering crash 
         if val is None or str(val).lower() in ['inf', 'infinity']: return np.nan
         try: return float(val)
         except: return np.nan
