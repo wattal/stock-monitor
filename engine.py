@@ -18,34 +18,39 @@ def calculate_rsi(series, period=14):
 @st.cache_data(ttl=3600)
 def get_usd_rate():
     try:
+        # Fix for deprecation warning: using iloc[0] for float conversion [cite: 25]
         df = yf.download("USDINR=X", period="5d", progress=False)
         return float(df["Close"].iloc[-1])
     except:
         return 84.5
 
-# --- BLOCK E2: UPDATED DATA FETCHING (Mobile Friendly) ---
+# --- BLOCK E2: UPDATED DATA FETCHING (Mobile & Hosted Stable) ---
 @st.cache_data(ttl=600)
 def download_bulk_history(tickers, period="1mo"):
     import yfinance as yf
     import time
     
-    # 1. Clean and filter out the tickers that consistently fail in logs
-    blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO"]
+    # 1. COMPREHENSIVE BLACKLIST: Tickers that consistently fail or cause rate limits in logs [cite: 16, 17, 21, 40, 65-69]
+    blacklist = [
+        "^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", 
+        "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", 
+        "FERMENTA.NS", "MANGCHEFER.NS"
+    ]
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
                for t in tickers if t not in blacklist]
     ticker_list = list(set(cleaned))
     
     all_chunks = []
-    chunk_size = 30 # Safer for hosted Streamlit environments
+    chunk_size = 25 # Smaller batches are safer to stay under the rate-limit radar [cite: 17, 21, 40]
     
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # Setting threads=False is more "polite" to Yahoo's servers
+            # Polite fetching with threads=False for hosted Streamlit environment stability [cite: 17, 21, 40]
             data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
             if not data.empty:
                 all_chunks.append(data)
-            time.sleep(0.7) 
+            time.sleep(0.8) # Human-like pause to avoid YFRateLimitError [cite: 65, 66]
         except Exception:
             continue
 
@@ -53,7 +58,7 @@ def download_bulk_history(tickers, period="1mo"):
 
     full_df = pd.concat(all_chunks, axis=1)
     
-    # 2. CRITICAL: Strip timezones to prevent DatetimeIndex crash
+    # 2. TIMEZONE FIX: Stripping timezones to prevent DatetimeIndex join crashes
     if not full_df.empty:
         full_df.index = full_df.index.tz_localize(None)
         
@@ -65,7 +70,8 @@ def calculate_baselines(tickers, raw_data, ref_date=None):
     
     for t in tickers:
         try:
-            df = raw_data[t].dropna(subset=["Close"]) if t in raw_data else pd.DataFrame()
+            if t not in raw_data: continue
+            df = raw_data[t].dropna(subset=["Close"])
             if df.empty: continue
             
             data_len = len(df)
@@ -79,12 +85,9 @@ def calculate_baselines(tickers, raw_data, ref_date=None):
                 if not since_df.empty: rl = float(since_df["Low"].min())
             
             baselines[t] = {
-                "30H": float(rec_30d["High"].max()), 
-                "30L": float(rec_30d["Low"].min()),
-                "15H": float(rec_15d["High"].max()), 
-                "15L": float(rec_15d["Low"].min()),
-                "7H": float(rec_7d["High"].max()), 
-                "7L": float(rec_7d["Low"].min()),
+                "30H": float(rec_30d["High"].max()), "30L": float(rec_30d["Low"].min()),
+                "15H": float(rec_15d["High"].max()), "15L": float(rec_15d["Low"].min()),
+                "7H": float(rec_7d["High"].max()), "7L": float(rec_7d["Low"].min()),
                 "52H": float(df["High"].max()) if data_len > 200 else np.nan,
                 "52L": float(df["Low"].min()) if data_len > 200 else np.nan,
                 "MA100": float(df["Close"].iloc[-100:].mean()) if data_len > 100 else np.nan,
@@ -100,12 +103,15 @@ def get_live_data(tickers, baselines, dormant_set):
     active = [t for t in tickers if t not in dormant_set]
     rows, failed = [], []
     if not active: return pd.DataFrame(), 0, []
+    
+    # Batch fetching live data to avoid 'NoneType' errors [cite: 17, 18]
     data = yf.download(active, period="5d", group_by="ticker", progress=False, threads=True)
     for t in active:
         try:
             df_t = data[t] if len(active) > 1 else data
-            if not df_t.empty:
+            if df_t is not None and not df_t.empty:
                 valid = df_t.dropna(subset=["Close"])
+                if valid.empty: continue
                 p = float(valid["Close"].iloc[-1])
                 prev = float(valid["Close"].iloc[-2]) if len(valid) > 1 else p
                 b = baselines.get(t, {})
@@ -129,7 +135,7 @@ def fetch_fundamentals_map(tickers, usd_rate):
     for t in tickers:
         try:
             info = yf.Ticker(t).info
-            # THE CRITICAL FIX FOR INFINITY ERRORS 
+            # THE CRITICAL FIX: Explicitly block 'Infinity' strings from entering the data pipeline 
             def clean_val(val):
                 if val is None or str(val).lower() in ['inf', 'infinity']:
                     return np.nan
