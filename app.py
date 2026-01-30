@@ -139,23 +139,27 @@ if st.session_state.market_df.empty:
 
 # 7. MAIN TABLE (Optimized for Mobile & Hosted Stability)
 if not st.session_state.market_df.empty:
-    # 7.1 SAFE DATA PREP
-    active = st.session_state.market_df.copy()
     
-    # Timezone fix for hosted stability
+    # --- 7.1 SAFE DATA PREP & TIMEZONE FIX ---
+    # Preserves your existing prep while fixing the hosted crash
+    active = st.session_state.market_df.copy()
     if isinstance(active.index, pd.DatetimeIndex):
         active.index = active.index.tz_localize(None)
-
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    # 7.2 APPLY FILTERS
-    if show_favs: active = active[active["⭐"] == "⭐"]
+    # --- 7.2 APPLY FILTERS (Watchlist, Search, Trend) ---
+    # All your existing functionality remains here
+    if show_favs: 
+        active = active[active["⭐"] == "⭐"]
     if search_q: 
         active = active[active["Name"].str.contains(search_q, case=False) | 
                         active["Sector"].str.contains(search_q, case=False)]
-    if trend_view == "Green": active = active[active["Change %"] > 0]
-    elif trend_view == "Red": active = active[active["Change %"] < 0]
+    if trend_view == "Green": 
+        active = active[active["Change %"] > 0]
+    elif trend_view == "Red": 
+        active = active[active["Change %"] < 0]
     
+    # Filters for 52W High/Low (Only if they exist in the data)
     if not lite_mode:
         if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": 
             active = active[active["Vol Breakout"] >= 1.5]
@@ -164,13 +168,14 @@ if not st.session_state.market_df.empty:
         elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": 
             active = active[active["vs 52W Low (%)"] <= 5]
 
-    # 7.3 SORTING & INDEXING
+    # --- 7.3 SORTING & INDEXING (Floating Stars) ---
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
     active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # 7.4 SAFE STYLING ENGINE
+    # --- 7.4 SAFE STYLING ENGINE (KeyError Protection) ---
+    # This segment ensures the styling doesn't crash on Mobile
     existing_order = [c for c in order if c in active.columns]
     existing_color_cols = [c for c in color_cols if c in active.columns]
     
@@ -187,7 +192,7 @@ if not st.session_state.market_df.empty:
                  .applymap(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=existing_fmt_cols))
 
-    # 7.5 RENDER TABLE
+    # --- 7.5 RENDER TABLE ---
     st.dataframe(styled_df, use_container_width=True, hide_index=True, height=850,
         column_config={
             "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
@@ -196,14 +201,15 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # 7.6 FOOTER LOAD TIME & SYNC INFO
+    # --- 7.6 FOOTER & BACKGROUND TASKS (Snapshot Time) ---
+    # Preserves your load-time and snapshot tracking
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     status_footer_placeholder.markdown(
         f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', 
         unsafe_allow_html=True
     )
 
-    # BACKGROUND FUNDAMENTALS
+    # Fundamentals Update logic
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
             try:
