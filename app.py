@@ -4,7 +4,6 @@ import pandas as pd
 import yfinance as yf
 import time
 from streamlit_js_eval import streamlit_js_eval
-
 import engine as eng
 from tickers import MASTER_MAP
 
@@ -16,18 +15,15 @@ st.markdown("""
     <style>
     .block-container { max-width: 98% !important; padding: 3.5rem 1rem 1rem 1rem !important; }
     section[data-testid="stSidebar"] { background-color: #f1f3f6 !important; }
-    
     .sidebar-header {
         font-size: 0.85rem !important; font-weight: 800 !important; color: #1e3a8a !important;
         text-transform: uppercase; letter-spacing: 1px; padding: 10px 5px 5px 0px;
         margin-top: 1.2rem !important; border-bottom: 2px solid #3b82f6; display: block;
     }
-    
     .snapshot-label {
         font-size: 0.75rem; font-weight: 700; color: #b91c1c; background-color: #fee2e2;
         padding: 4px 10px; border-radius: 6px; margin-top: 10px; display: inline-block; border: 1px solid #fecaca;
     }
-    
     [data-testid="stDataEditor"] div[role="columnheader"], [data-testid="stDataFrame"] div[role="columnheader"] {
         height: 105px !important; min-height: 105px !important;
     }
@@ -64,12 +60,11 @@ else:
     order = ["⭐", "#", "Name", "Sector", "LTP", "Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 52W High (%)", "vs 52W Low (%)", "Up/Low since", "RSI (14)", "Vol Breakout", "vs 100DMA (%)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
     color_cols = ["Change %", "vs 7D High (%)", "vs 7D Low (%)", "vs 15D High (%)", "vs 15D Low (%)", "vs 52W High (%)", "vs 52W Low (%)", "Up/Low since", "vs 100DMA (%)"]
 
-# 5. SIDEBAR RENDERING (MARKET STATUS & SNAPSHOT TIME)
+# 5. SIDEBAR RENDERING
 st.sidebar.markdown('<p class="sidebar-header">📊 MARKET STATUS</p>', unsafe_allow_html=True)
 stat_col1, stat_col2 = st.sidebar.columns(2)
 metric_stocks, metric_nifty = stat_col1.empty(), stat_col2.empty()
 
-# RETAINED: Snapshot time label
 if "fundamentals_time" in st.session_state:
     st.sidebar.markdown(f'<div class="snapshot-label">🕒 Snapshot: {st.session_state.fundamentals_time}</div>', unsafe_allow_html=True)
 
@@ -115,10 +110,8 @@ if st.session_state.market_df.empty:
         try:
             st.write("📡 Connecting to Market Data Gateway...")
             raw = st.cache_data(eng.download_bulk_history)(MASTER_TICKERS, period=FETCH_PERIOD)
-            
             st.write("🔢 Calculating Technical Baselines...")
             base = eng.calculate_baselines(MASTER_TICKERS, raw, ref_date)
-            
             st.write("📊 Finalizing Live Data View...")
             df, _, _ = eng.get_live_data(MASTER_TICKERS, base, set())
             
@@ -134,66 +127,54 @@ if st.session_state.market_df.empty:
             st.session_state.total_load_time = f"{time.time() - start_time:.2f}s"
             status.update(label="✅ Data Synced!", state="complete", expanded=False)
             st.rerun()
-        except Exception as e: 
-            st.error(f"Fetch Error: {e}")
+        except Exception as e: st.error(f"Fetch Error: {e}")
 
-# 7. MAIN TABLE (Optimized for Mobile & Hosted Stability)
+# 7. MAIN TABLE (Corrected & Stable for Mobile)
 if not st.session_state.market_df.empty:
     
-    # --- 7.1 SAFE DATA PREP & TIMEZONE FIX ---
-    # Preserves your existing prep while fixing the hosted crash
+    # 7.1 SAFE DATA PREP & TIMEZONE FIX
     active = st.session_state.market_df.copy()
     if isinstance(active.index, pd.DatetimeIndex):
-        active.index = active.index.tz_localize(None)
+        active.index = active.index.tz_localize(None) # Fix for hosted link
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
-    # --- 7.2 APPLY FILTERS (Watchlist, Search, Trend) ---
-    # All your existing functionality remains here
-    if show_favs: 
-        active = active[active["⭐"] == "⭐"]
-    if search_q: 
-        active = active[active["Name"].str.contains(search_q, case=False) | 
-                        active["Sector"].str.contains(search_q, case=False)]
-    if trend_view == "Green": 
-        active = active[active["Change %"] > 0]
-    elif trend_view == "Red": 
-        active = active[active["Change %"] < 0]
+    # 7.2 APPLY FILTERS
+    if show_favs: active = active[active["⭐"] == "⭐"]
+    if search_q: active = active[active["Name"].str.contains(search_q, case=False) | active["Sector"].str.contains(search_q, case=False)]
+    if trend_view == "Green": active = active[active["Change %"] > 0]
+    elif trend_view == "Red": active = active[active["Change %"] < 0]
     
-    # Filters for 52W High/Low (Only if they exist in the data)
     if not lite_mode:
-        if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": 
-            active = active[active["Vol Breakout"] >= 1.5]
-        elif "vs 52W High (%)" in active.columns and view_filter == "Near 52W High (<= 5%)": 
-            active = active[active["vs 52W High (%)"] >= -5]
-        elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": 
-            active = active[active["vs 52W Low (%)"] <= 5]
+        if "Vol Breakout" in active.columns and view_filter == "Vol Breakout": active = active[active["Vol Breakout"] >= 1.5]
+        elif "vs 52W High (%)" in active.columns and view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
+        elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
 
-    # --- 7.3 SORTING & INDEXING (Floating Stars) ---
+    # 7.3 SORTING & INDEXING
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
     active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # --- 7.4 SAFE STYLING ENGINE (KeyError Protection) ---
-    # This segment ensures the styling doesn't crash on Mobile
+    # 7.4 SAFE STYLING ENGINE
     existing_order = [c for c in order if c in active.columns]
     existing_color_cols = [c for c in color_cols if c in active.columns]
     
     current_fmt_cols = color_cols + ["Vol Breakout"]
-    if not lite_mode: 
-        current_fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
+    if not lite_mode: current_fmt_cols += ["RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
     existing_fmt_cols = [c for c in current_fmt_cols if c in active.columns]
 
     def apply_color(val):
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
+    # Correcting .applymap to .map as per server logs [cite: 23]
     styled_df = (active[existing_order].style
-                 .applymap(apply_color, subset=existing_color_cols)
+                 .map(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=existing_fmt_cols))
 
-    # --- 7.5 RENDER TABLE ---
-    st.dataframe(styled_df, use_container_width=True, hide_index=True, height=850,
+    # 7.5 RENDER TABLE
+    # Correcting width to 'stretch' for mobile responsiveness [cite: 24, 29]
+    st.dataframe(styled_df, width="stretch", hide_index=True, height=850,
         column_config={
             "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
             "#": st.column_config.NumberColumn("#", width=35, pinned=True),
@@ -201,15 +182,10 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # --- 7.6 FOOTER & BACKGROUND TASKS (Snapshot Time) ---
-    # Preserves your load-time and snapshot tracking
+    # 7.6 FOOTER & BACKGROUND TASKS
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
-    status_footer_placeholder.markdown(
-        f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', 
-        unsafe_allow_html=True
-    )
+    status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
 
-    # Fundamentals Update logic
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
             try:
@@ -217,7 +193,8 @@ if not st.session_state.market_df.empty:
                 st.session_state.fundamentals_time = datetime.datetime.now().strftime("%H:%M")
                 for t, v in f_map.items():
                     for col, val in v.items(): 
-                        st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = val
+                        # Ensuring data is numeric before setting to prevent 'Infinity' crash [cite: 32, 45]
+                        st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = v[col]
                 fundamental_status.update(label="Fundamentals Updated", state="complete")
                 st.rerun()
             except Exception as e:
