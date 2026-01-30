@@ -156,15 +156,19 @@ if not st.session_state.market_df.empty:
                  .map(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=existing_fmt_cols))
 
-    # 7.5 RENDER TABLE
-    # Correcting width to 'stretch' for hosted Streamlit environment [cite: 23, 24, 28, 29, 42, 43, 46, 47, 52-54]
-    st.dataframe(styled_df, width="stretch", hide_index=True, height=850,
-        column_config={
-            "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
-            "#": st.column_config.NumberColumn("#", width=35, pinned=True),
-            "Name": st.column_config.TextColumn("Name", width=180, pinned=True),
-            "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
-        })
+    # --- 7.5 RENDER TABLE (Fixed for Streamlit 1.53.1) ---
+    st.dataframe(
+    styled_df, 
+    width="stretch", # Required for Streamlit 1.53+ [cite: 24, 29]
+    hide_index=True, 
+    height=850,
+    column_config={
+        "⭐": st.column_config.TextColumn("⭐", pinned=True), # Removed fixed width to stop TypeError
+        "#": st.column_config.NumberColumn("#", pinned=True),
+        "Name": st.column_config.TextColumn("Name", pinned=True),
+        "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
+    }
+)
 
     # 7.6 FOOTER & SYNC
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
