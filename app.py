@@ -87,19 +87,31 @@ c1, c2 = st.sidebar.columns(2)
 if c1.button("Refresh", use_container_width=True): st.session_state.market_df = pd.DataFrame(); st.rerun()
 if c2.button("Reset", use_container_width=True): st.cache_data.clear(); st.rerun()
 
-# 6. INITIAL FETCH
+# 6. INITIAL FETCH (With Granular Phase Tracking)
 if st.session_state.market_df.empty:
     start_time = time.time()
+    # Using st.status to provide a persistent heartbeat to the browser
     with st.status(f"🚀 Phase 1: Fetching {FETCH_PERIOD} History...", expanded=True) as status:
         try:
-            st.write("📡 Connecting to Market Data Gateway...")
+            # TRACKER 1: Connection Phase
+            st.write("📡 Step 1: Connecting to Market Data Gateway...")
             raw = st.cache_data(eng.download_bulk_history)(MASTER_TICKERS, period=FETCH_PERIOD)
-            st.write("🔢 Calculating Technical Baselines...")
+            
+            if raw.empty:
+                st.error("⚠️ Phase 1 Failed: No data returned from Gateway. Check for Rate Limits.")
+                st.stop()
+            
+            # TRACKER 2: Baseline Calculation
+            st.write(f"🔢 Step 2: Calculating Baselines for {len(MASTER_TICKERS)} scripts...")
             base = eng.calculate_baselines(MASTER_TICKERS, raw, ref_date)
-            st.write("📊 Finalizing Live Data View...")
+            
+            # TRACKER 3: Live Snapshot Phase
+            st.write("📊 Step 3: Finalizing Live Snapshot View...")
             df, _, _ = eng.get_live_data(MASTER_TICKERS, base, set())
             
+            # TRACKER 4: Mobile Lite mode Post-Processing
             if lite_mode:
+                st.write("📱 Step 4: Trimming View for Mobile Lite Mode...")
                 for x in MASTER_TICKERS:
                     if x in base and not df.loc[df['TickerID']==x].empty:
                         ltp = df.loc[df['TickerID']==x, 'LTP'].values[0]
@@ -109,9 +121,15 @@ if st.session_state.market_df.empty:
             
             st.session_state.market_df = df
             st.session_state.total_load_time = f"{time.time() - start_time:.2f}s"
-            status.update(label="✅ Data Synced!", state="complete", expanded=False)
+            
+            # TRACKER 5: Completion
+            status.update(label=f"✅ Data Synced in {st.session_state.total_load_time}!", state="complete", expanded=False)
             st.rerun()
-        except Exception as e: st.error(f"Fetch Error: {e}")
+            
+        except Exception as e:
+            st.error(f"❌ Phase Tracker Error: {type(e).__name__} at {e}")
+            # This logs the specific failure point for our next debug iteration
+            print(f"DEBUG: App hung at Step {status}")
 
 # 7. MAIN TABLE (Strictly Limited for Mobile/Lite Mode)
 if not st.session_state.market_df.empty:
