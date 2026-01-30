@@ -27,28 +27,38 @@ def get_usd_rate():
 @st.cache_data(ttl=600) # Reduced TTL to 10 mins for better fresh data
 def download_bulk_history(tickers, period="1mo"):
     import yfinance as yf
+    import time
     
-    # Clean tickers
+    # 1. Standardize tickers
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") for t in tickers]
-    ticker_list = list(set(cleaned)) # Create a static copy to prevent 'size changed' error
+    ticker_list = list(set(cleaned))
     
-    # Use a lean fetch to avoid Rate Limits on mobile
-    data = yf.download(
-        tickers=ticker_list, 
-        period=period, 
-        group_by="ticker", 
-        progress=False, 
-        threads=True
-    )
-    
-    # CRITICAL FIX: Strip timezones immediately to prevent "tz-naive vs tz-aware" crash
-    if not data.empty:
+    # 2. Batch Processing (Chunking) to avoid Rate Limits
+    all_chunks = []
+    chunk_size = 50 
+    for i in range(0, len(ticker_list), chunk_size):
+        chunk = ticker_list[i : i + chunk_size]
         try:
-            data.index = data.index.tz_localize(None)
-        except:
-            pass
-            
-    return data
+            # We fetch without custom sessions to satisfy the latest YF requirements
+            data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=True)
+            if not data.empty:
+                all_chunks.append(data)
+            # Short sleep to prevent IP flagging on the hosted server
+            time.sleep(0.5) 
+        except Exception:
+            continue
+
+    if not all_chunks:
+        return pd.DataFrame()
+
+    # 3. Combine and Clean
+    full_df = pd.concat(all_chunks, axis=1)
+    
+    # 4. CRITICAL: Strip timezones to prevent the hosted link crash
+    if not full_df.empty:
+        full_df.index = full_df.index.tz_localize(None)
+        
+    return full_df
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
     baselines = {}
