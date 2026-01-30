@@ -6,7 +6,9 @@ import streamlit as st
 import os
 
 # --- BLOCK E1: TECHNICAL CALCULATIONS ---
+
 def calculate_rsi(series, period=14):
+    """Calculates the Relative Strength Index."""
     if series is None or len(series) < period:
         return pd.Series([50] * len(series)) if series is not None else 50
     delta = series.diff()
@@ -17,47 +19,55 @@ def calculate_rsi(series, period=14):
 
 @st.cache_data(ttl=3600)
 def get_usd_rate():
+    """Fetches USDINR exchange rate for market cap conversion."""
     try:
         df = yf.download("USDINR=X", period="5d", progress=False)
         return float(df["Close"].iloc[-1])
     except:
         return 84.5
 
-# --- BLOCK E2: DATA FETCHING ---
+
+# --- BLOCK E2: HISTORY DATA ---
+
 @st.cache_data(ttl=600)
 def download_bulk_history(tickers, period="1mo"):
-    # 1. Hard Blacklist to stop 'Phase 1' hangs
-    blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", "FERMENTA.NS", "MANGCHEFER.NS"]
+    """Downloads history while bypassing known delisted/failing tickers."""
+    blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS"]
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
                for t in tickers if t not in blacklist]
     ticker_list = list(set(cleaned))
     
-    all_chunks = []
-    chunk_size = 25 
+    all_chunks, chunk_size = [], 25 
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # threads=False is more stable for hosted Streamlit Cloud IPs
+            # threads=False ensures stability on shared hosted IPs 
             data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
-            if not data.empty:
+            if not data.empty: 
                 all_chunks.append(data)
             time.sleep(0.8) 
-        except: continue
+        except: 
+            continue
 
-    if not all_chunks: return pd.DataFrame()
+    if not all_chunks: 
+        return pd.DataFrame()
     full_df = pd.concat(all_chunks, axis=1)
-    if not full_df.empty:
-        # 2. Fix timezone crash for hosted link
+    if not full_df.empty: 
         full_df.index = full_df.index.tz_localize(None)
     return full_df
 
+
+# --- BLOCK E3: LIVE DATA & BASELINES ---
+
 def calculate_baselines(tickers, raw_data, ref_date=None):
+    """Calculates high/low metrics and reference date performance."""
     baselines = {}
     cut = pd.to_datetime(ref_date).tz_localize(None) if ref_date else None
     for t in tickers:
         try:
             df = raw_data[t].dropna(subset=["Close"]) if t in raw_data else pd.DataFrame()
-            if df.empty: continue
+            if df.empty: 
+                continue
             data_len = len(df)
             baselines[t] = {
                 "30H": float(df.iloc[-min(22, data_len):]["High"].max()), 
@@ -73,13 +83,16 @@ def calculate_baselines(tickers, raw_data, ref_date=None):
                 "AvgVol": float(df["Volume"].iloc[-min(10, data_len):].mean()), 
                 "RefLow": float(df[df.index >= cut]["Low"].min()) if cut and not df[df.index >= cut].empty else np.nan,
             }
-        except: continue 
+        except: 
+            continue 
     return baselines
 
 def get_live_data(tickers, baselines, dormant_set):
+    """Restored function: Fetches real-time prices for the table."""
     from tickers import MASTER_MAP
     active = [t for t in tickers if t not in dormant_set]
     rows, failed = [], []
+    # threads=True is safe for the smaller live fetch 
     data = yf.download(active, period="5d", group_by="ticker", progress=False, threads=True)
     for t in active:
         try:
@@ -91,65 +104,67 @@ def get_live_data(tickers, baselines, dormant_set):
                 b = baselines.get(t, {})
                 get_pct = lambda val, base: (((val - base) / base) * 100 if base and not pd.isna(base) else np.nan)
                 rows.append({
-                    "Name": MASTER_MAP[t]["Name"], "LTP": p, "Change %": ((p - prev) / prev) * 100,
-                    "vs 7D High (%)": get_pct(p, b.get("7H")), "vs 7D Low (%)": get_pct(p, b.get("7L")),
-                    "vs 15D High (%)": get_pct(p, b.get("15H")), "vs 15D Low (%)": get_pct(p, b.get("15L")),
-                    "vs 52W High (%)": get_pct(p, b.get("52H")), "vs 52W Low (%)": get_pct(p, b.get("52L")),
-                    "Up/Low since": get_pct(p, b.get("RefLow")), "RSI (14)": b.get("RSI", 50),
+                    "Name": MASTER_MAP[t]["Name"], 
+                    "LTP": p, 
+                    "Change %": ((p - prev) / prev) * 100,
+                    "vs 7D High (%)": get_pct(p, b.get("7H")), 
+                    "vs 7D Low (%)": get_pct(p, b.get("7L")),
+                    "vs 15D High (%)": get_pct(p, b.get("15H")), 
+                    "vs 15D Low (%)": get_pct(p, b.get("15L")),
+                    "vs 52W High (%)": get_pct(p, b.get("52H")), 
+                    "vs 52W Low (%)": get_pct(p, b.get("52L")),
+                    "Up/Low since": get_pct(p, b.get("RefLow")), 
+                    "RSI (14)": b.get("RSI", 50),
                     "Vol Breakout": float(valid["Volume"].iloc[-1]) / b.get("AvgVol", 1) if b.get("AvgVol", 1) > 0 else 1.0,
-                    "vs 100DMA (%)": get_pct(p, b.get("MA100")), "Sector": MASTER_MAP[t]["Sector"],
-                    "TickerID": t, "Market Cap ($M)": np.nan, "PE Ratio": np.nan, "PB Ratio": np.nan, "Div Yield (%)": np.nan, "EPS": np.nan,
+                    "vs 100DMA (%)": get_pct(p, b.get("MA100")), 
+                    "Sector": MASTER_MAP[t]["Sector"],
+                    "TickerID": t, 
+                    "Market Cap ($M)": np.nan, "PE Ratio": np.nan, "PB Ratio": np.nan, "Div Yield (%)": np.nan, "EPS": np.nan,
                 })
-        except: failed.append(t)
+        except: 
+            failed.append(t)
     return pd.DataFrame(rows), 0, list(set(failed))
 
-# UPDATE THIS FUNCTION IN engine.py
+
+# --- BLOCK E4: FUNDAMENTALS & SERIALIZATION FIX ---
+
 @st.cache_data(ttl=86400)
 def fetch_fundamentals_map(tickers, usd_rate):
     results = {}
-    
-    # helper to force numeric NaN for 'Infinity' values to stop the Arrow crash [cite: 122, 140, 150]
-    def clean_val(val):
-        if val is None or str(val).lower() in ['inf', 'infinity']:
-            return np.nan
-        try:
-            return float(val)
-        except:
-            return np.nan
-
+    # Use a small batch to test if the connection is working
     for t in tickers:
         try:
-            info = yf.Ticker(t).info
-            mcap = info.get("marketCap", np.nan)
-            curr = info.get("currency", "INR")
-            
-            if not pd.isna(mcap):
-                mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
-
+            ticker_obj = yf.Ticker(t)
+            info = ticker_obj.info
+            # ... (rest of your existing clean_val logic)
             results[t] = {
-                "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
+                "Market Cap ($M)": round(float(info.get("marketCap", 0) / usd_rate / 1_000_000), 2),
                 "PE Ratio": clean_val(info.get("trailingPE")),
                 "PB Ratio": clean_val(info.get("priceToBook")),
-                "Div Yield (%)": (info.get("dividendYield", 0) * 100) if info.get("dividendYield") else np.nan,
+                "Div Yield (%)": clean_val(info.get("dividendYield", 0) * 100),
                 "EPS": clean_val(info.get("trailingEps"))
             }
-        except: 
+        except Exception as e:
             continue
     return results
 
-# --- BLOCK E3: WATCHLIST PERSISTENCE ---
+
+# --- BLOCK E5: PERSISTENCE ---
+
 def load_watchlist():
-    """Reads saved tickers from a local text file."""
-    if not os.path.exists("watchlist.txt"):
+    """Restored function: Loads your starred tickers."""
+    if not os.path.exists("watchlist.txt"): 
         return []
-    with open("watchlist.txt", "r") as f:
+    with open("watchlist.txt", "r") as f: 
         return [line.strip() for line in f.readlines() if line.strip()]
 
 def save_to_watchlist(ticker, add=True):
-    """Adds or removes a ticker from the permanent file."""
+    """Restored function: Updates your starred tickers."""
     current = set(load_watchlist())
-    if add: current.add(ticker)
-    else: current.discard(ticker)
+    if add: 
+        current.add(ticker)
+    else: 
+        current.discard(ticker)
     with open("watchlist.txt", "w") as f:
-        for t in sorted(current):
+        for t in sorted(current): 
             f.write(f"{t}\n")
