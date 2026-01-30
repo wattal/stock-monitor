@@ -161,20 +161,41 @@ if not st.session_state.market_df.empty:
     active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # UPDATE SECTION 7.4 & 7.5 IN app.py
-    # 7.4 Styling (Use .map instead of .applymap) [cite: 112, 118, 141]
-    styled_df = (active[existing_order].style
-             .map(apply_color, subset=existing_color_cols)
-             .format(precision=1, subset=existing_fmt_cols))
+    # --- 7.4 DEFENSIVE STYLING (The Fix for existing_order) ---
+    # 1. Define which columns to show based on the 'order' list set in Section 4
+    existing_order = [c for c in order if c in active.columns]
+    
+    # 2. Define which columns should be colored (Red/Green)
+    existing_color_cols = [c for c in color_cols if c in active.columns]
+    
+    # 3. Define which columns need decimal formatting (precision=1)
+    fmt_target = color_cols + ["Vol Breakout", "RSI (14)", "Market Cap ($M)", "PE Ratio", "PB Ratio", "Div Yield (%)", "EPS"]
+    existing_fmt_cols = [c for c in fmt_target if c in active.columns]
 
-    # 7.5 Rendering (Use width='stretch' and remove 'pinned' if it crashes) [cite: 113, 119, 133]
-    st.dataframe(styled_df, width="stretch", hide_index=True, height=850,
-    column_config={
-        "⭐": st.column_config.TextColumn("⭐"),
-        "#": st.column_config.NumberColumn("#"),
-        "Name": st.column_config.TextColumn("Name"),
-        "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
-    })
+    def apply_color(val):
+        if not isinstance(val, (int, float)) or pd.isna(val): 
+            return "color: black;"
+        return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
+
+    # 4. Create the styled dataframe using the now-defined existing_order
+    # Using .map instead of .applymap for Streamlit 2026 compatibility
+    styled_df = (active[existing_order].style
+                 .map(apply_color, subset=existing_color_cols)
+                 .format(precision=1, subset=existing_fmt_cols))
+
+    # --- 7.5 RENDER TABLE (Optimized for Mobile) ---
+    st.dataframe(
+        styled_df, 
+        width="stretch", 
+        hide_index=True, 
+        height=850,
+        column_config={
+            "⭐": st.column_config.TextColumn("⭐"), # Removed 'pinned' to fix TypeError
+            "#": st.column_config.NumberColumn("#"),
+            "Name": st.column_config.TextColumn("Name"),
+            "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
+        }
+    )
 
     # --- 7.6 FOOTER & SNAPSHOT ---
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
