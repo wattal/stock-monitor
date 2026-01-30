@@ -137,14 +137,25 @@ def fetch_fundamentals_map(tickers, usd_rate):
             info = yf.Ticker(t).info
             mcap = info.get("marketCap", np.nan)
             curr = info.get("currency", "INR")
+            
             if not pd.isna(mcap):
                 mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
+            
+            # --- THE CRITICAL FIX FOR INFINITY ERRORS ---
+            def clean_val(val):
+                if val is None or str(val).lower() in ['inf', 'infinity']:
+                    return np.nan
+                try:
+                    return float(val)
+                except:
+                    return np.nan
+
             results[t] = {
-                "Market Cap ($M)": round(mcap, 2),
-                "PE Ratio": info.get("trailingPE", np.nan),
-                "PB Ratio": info.get("priceToBook", np.nan),
+                "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
+                "PE Ratio": clean_val(info.get("trailingPE")),
+                "PB Ratio": clean_val(info.get("priceToBook")),
                 "Div Yield (%)": (info.get("dividendYield", 0) * 100) if info.get("dividendYield") else np.nan,
-                "EPS": info.get("trailingEps", np.nan)
+                "EPS": clean_val(info.get("trailingEps"))
             }
         except: continue
     return results
