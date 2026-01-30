@@ -103,11 +103,12 @@ def get_live_data(tickers, baselines, dormant_set):
         except: failed.append(t)
     return pd.DataFrame(rows), 0, list(set(failed))
 
+# UPDATE THIS FUNCTION IN engine.py
 @st.cache_data(ttl=86400)
 def fetch_fundamentals_map(tickers, usd_rate):
     results = {}
     
-    # THE FIX FOR ARROW CRASH: Force numeric NaN for 'Infinity' values
+    # helper to force numeric NaN for 'Infinity' values to stop the Arrow crash [cite: 122, 140, 150]
     def clean_val(val):
         if val is None or str(val).lower() in ['inf', 'infinity']:
             return np.nan
@@ -121,9 +122,10 @@ def fetch_fundamentals_map(tickers, usd_rate):
             info = yf.Ticker(t).info
             mcap = info.get("marketCap", np.nan)
             curr = info.get("currency", "INR")
+            
             if not pd.isna(mcap):
                 mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
-            
+
             results[t] = {
                 "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
                 "PE Ratio": clean_val(info.get("trailingPE")),
@@ -131,7 +133,8 @@ def fetch_fundamentals_map(tickers, usd_rate):
                 "Div Yield (%)": (info.get("dividendYield", 0) * 100) if info.get("dividendYield") else np.nan,
                 "EPS": clean_val(info.get("trailingEps"))
             }
-        except: continue
+        except: 
+            continue
     return results
 
 # --- BLOCK E3: WATCHLIST PERSISTENCE ---
