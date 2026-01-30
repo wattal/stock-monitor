@@ -1,5 +1,6 @@
-streamlit
 yfinance
 pandas
 numpy
+streamlit
+streamlit-js-eval
 curl_cffi
