@@ -26,7 +26,7 @@ def get_usd_rate():
 # --- BLOCK E2: DATA FETCHING ---
 @st.cache_data(ttl=600)
 def download_bulk_history(tickers, period="1mo"):
-    # Hard blacklist for tickers that are delisted or causing timeouts [cite: 16, 21, 40]
+    # 1. Hard Blacklist to stop 'Phase 1' hangs
     blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", "FERMENTA.NS", "MANGCHEFER.NS"]
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
                for t in tickers if t not in blacklist]
@@ -37,7 +37,7 @@ def download_bulk_history(tickers, period="1mo"):
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # threads=False prevents the 'NoneType' and 'Dictionary Size' errors on shared IPs [cite: 16, 17]
+            # threads=False is more stable for hosted Streamlit Cloud IPs
             data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
             if not data.empty:
                 all_chunks.append(data)
@@ -47,7 +47,7 @@ def download_bulk_history(tickers, period="1mo"):
     if not all_chunks: return pd.DataFrame()
     full_df = pd.concat(all_chunks, axis=1)
     if not full_df.empty:
-        # Strip timezones for hosted server compatibility
+        # 2. Fix timezone crash for hosted link
         full_df.index = full_df.index.tz_localize(None)
     return full_df
 
@@ -106,11 +106,16 @@ def get_live_data(tickers, baselines, dormant_set):
 @st.cache_data(ttl=86400)
 def fetch_fundamentals_map(tickers, usd_rate):
     results = {}
-    def clean_val(val): 
-        # Prevents Arrow rendering crash 
-        if val is None or str(val).lower() in ['inf', 'infinity']: return np.nan
-        try: return float(val)
-        except: return np.nan
+    
+    # THE FIX FOR ARROW CRASH: Force numeric NaN for 'Infinity' values
+    def clean_val(val):
+        if val is None or str(val).lower() in ['inf', 'infinity']:
+            return np.nan
+        try:
+            return float(val)
+        except:
+            return np.nan
+
     for t in tickers:
         try:
             info = yf.Ticker(t).info
@@ -118,6 +123,7 @@ def fetch_fundamentals_map(tickers, usd_rate):
             curr = info.get("currency", "INR")
             if not pd.isna(mcap):
                 mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
+            
             results[t] = {
                 "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
                 "PE Ratio": clean_val(info.get("trailingPE")),
@@ -128,13 +134,19 @@ def fetch_fundamentals_map(tickers, usd_rate):
         except: continue
     return results
 
+# --- BLOCK E3: WATCHLIST PERSISTENCE ---
 def load_watchlist():
-    if not os.path.exists("watchlist.txt"): return []
-    with open("watchlist.txt", "r") as f: return [line.strip() for line in f.readlines() if line.strip()]
+    """Reads saved tickers from a local text file."""
+    if not os.path.exists("watchlist.txt"):
+        return []
+    with open("watchlist.txt", "r") as f:
+        return [line.strip() for line in f.readlines() if line.strip()]
 
 def save_to_watchlist(ticker, add=True):
+    """Adds or removes a ticker from the permanent file."""
     current = set(load_watchlist())
     if add: current.add(ticker)
     else: current.discard(ticker)
     with open("watchlist.txt", "w") as f:
-        for t in sorted(current): f.write(f"{t}\n")
+        for t in sorted(current):
+            f.write(f"{t}\n")
