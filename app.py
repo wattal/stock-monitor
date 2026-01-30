@@ -10,39 +10,25 @@ from tickers import MASTER_MAP
 # 1. PAGE CONFIG
 st.set_page_config(page_title="Market Monitor v0.5.6", layout="wide")
 
-# 2. UI STYLE & BENCHMARK CSS
+# 2. UI STYLE & CSS
 st.markdown("""
     <style>
     .block-container { max-width: 98% !important; padding: 3.5rem 1rem 1rem 1rem !important; }
     section[data-testid="stSidebar"] { background-color: #f1f3f6 !important; }
-    .sidebar-header {
-        font-size: 0.85rem !important; font-weight: 800 !important; color: #1e3a8a !important;
-        text-transform: uppercase; letter-spacing: 1px; padding: 10px 5px 5px 0px;
-        margin-top: 1.2rem !important; border-bottom: 2px solid #3b82f6; display: block;
-    }
-    .snapshot-label {
-        font-size: 0.75rem; font-weight: 700; color: #b91c1c; background-color: #fee2e2;
-        padding: 4px 10px; border-radius: 6px; margin-top: 10px; display: inline-block; border: 1px solid #fecaca;
-    }
-    [data-testid="stDataEditor"] div[role="columnheader"], [data-testid="stDataFrame"] div[role="columnheader"] {
-        height: 105px !important; min-height: 105px !important;
-    }
-    [data-testid="stDataEditor"] div[role="columnheader"] p, [data-testid="stDataFrame"] div[role="columnheader"] p {
-        white-space: normal !important; word-wrap: break-word !important; line-height: 1.1 !important;
-        font-size: 0.72rem !important; text-align: center !important; overflow: visible !important;
-    }
+    .sidebar-header { font-size: 0.85rem !important; font-weight: 800 !important; color: #1e3a8a !important; text-transform: uppercase; border-bottom: 2px solid #3b82f6; display: block; margin-top: 1.2rem !important; }
+    .snapshot-label { font-size: 0.75rem; font-weight: 700; color: #b91c1c; background-color: #fee2e2; padding: 4px 10px; border-radius: 6px; margin-top: 10px; display: inline-block; border: 1px solid #fecaca; }
+    [data-testid="stDataEditor"] div[role="columnheader"], [data-testid="stDataFrame"] div[role="columnheader"] { height: 105px !important; min-height: 105px !important; }
+    [data-testid="stDataEditor"] div[role="columnheader"] p, [data-testid="stDataFrame"] div[role="columnheader"] p { white-space: normal !important; word-wrap: break-word !important; line-height: 1.1 !important; font-size: 0.72rem !important; text-align: center !important; overflow: visible !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. ROBUST INITIALIZATION
+# 3. INITIALIZATION
 if "market_df" not in st.session_state: st.session_state.market_df = pd.DataFrame()
 if "watchlist" not in st.session_state: st.session_state.watchlist = eng.load_watchlist()
-if "update_counter" not in st.session_state: st.session_state.update_counter = 0
-
 MASTER_TICKERS = list(MASTER_MAP.keys())
 TOTAL_MASTER_COUNT = len(MASTER_MAP)
 
-# 4. DEVICE DETECTION & VIEW CONFIG
+# 4. DEVICE DETECTION
 ua = streamlit_js_eval(js_expressions='window.navigator.userAgent', key='UA')
 is_mobile_detected = any(x in str(ua).lower() for x in ["mobile", "android", "iphone"]) if ua else False
 
@@ -98,10 +84,8 @@ view_filter = st.sidebar.selectbox("View", ["All", "Vol Breakout", "Near 52W Hig
 st.sidebar.markdown('<p class="sidebar-header">⚙️ CONTROLS</p>', unsafe_allow_html=True)
 status_footer_placeholder = st.sidebar.empty()
 c1, c2 = st.sidebar.columns(2)
-if c1.button("Refresh", use_container_width=True): 
-    st.session_state.market_df = pd.DataFrame(); st.rerun()
-if c2.button("Reset", use_container_width=True): 
-    st.cache_data.clear(); st.rerun()
+if c1.button("Refresh", use_container_width=True): st.session_state.market_df = pd.DataFrame(); st.rerun()
+if c2.button("Reset", use_container_width=True): st.cache_data.clear(); st.rerun()
 
 # 6. INITIAL FETCH
 if st.session_state.market_df.empty:
@@ -129,13 +113,13 @@ if st.session_state.market_df.empty:
             st.rerun()
         except Exception as e: st.error(f"Fetch Error: {e}")
 
-# 7. MAIN TABLE (Corrected & Stable for Mobile)
+# 7. MAIN TABLE (Sub-segments 7.1 to 7.6 Preserved & Protected)
 if not st.session_state.market_df.empty:
     
-    # 7.1 SAFE DATA PREP & TIMEZONE FIX
+    # 7.1 DATA PREP & TIMEZONE FIX
     active = st.session_state.market_df.copy()
     if isinstance(active.index, pd.DatetimeIndex):
-        active.index = active.index.tz_localize(None) # Fix for hosted link
+        active.index = active.index.tz_localize(None) # Match timezone fix in engine.py
     active["⭐"] = active["TickerID"].apply(lambda x: "⭐" if x in st.session_state.watchlist else "")
     
     # 7.2 APPLY FILTERS
@@ -149,13 +133,13 @@ if not st.session_state.market_df.empty:
         elif "vs 52W High (%)" in active.columns and view_filter == "Near 52W High (<= 5%)": active = active[active["vs 52W High (%)"] >= -5]
         elif "vs 52W Low (%)" in active.columns and view_filter == "Near 52W Low (>= -5%)": active = active[active["vs 52W Low (%)"] <= 5]
 
-    # 7.3 SORTING & INDEXING
+    # 7.3 SORTING (Floating Stars)
     active["sort_order"] = active["⭐"].apply(lambda x: 0 if x == "⭐" else 1)
     active = active.sort_values(by=["sort_order", "Name"], ascending=[True, True])
     active = active.reset_index(drop=True)
     active.insert(0, "#", range(1, len(active) + 1))
 
-    # 7.4 SAFE STYLING ENGINE
+    # 7.4 DEFENSIVE STYLING (Prevents KeyError)
     existing_order = [c for c in order if c in active.columns]
     existing_color_cols = [c for c in color_cols if c in active.columns]
     
@@ -167,13 +151,13 @@ if not st.session_state.market_df.empty:
         if not isinstance(val, (int, float)) or pd.isna(val): return "color: black;"
         return f"color: {'#27ae60' if val > 0 else '#e74c3c'}; font-weight: bold;"
 
-    # Correcting .applymap to .map as per server logs [cite: 23]
+    # Correcting .applymap to .map for future compatibility [cite: 22, 28, 42, 46, 51, 52]
     styled_df = (active[existing_order].style
                  .map(apply_color, subset=existing_color_cols)
                  .format(precision=1, subset=existing_fmt_cols))
 
     # 7.5 RENDER TABLE
-    # Correcting width to 'stretch' for mobile responsiveness [cite: 24, 29]
+    # Correcting width to 'stretch' for hosted Streamlit environment [cite: 23, 24, 28, 29, 42, 43, 46, 47, 52-54]
     st.dataframe(styled_df, width="stretch", hide_index=True, height=850,
         column_config={
             "⭐": st.column_config.TextColumn("⭐", width=35, pinned=True),
@@ -182,10 +166,11 @@ if not st.session_state.market_df.empty:
             "LTP": st.column_config.NumberColumn("LTP", format="%.1f")
         })
 
-    # 7.6 FOOTER & BACKGROUND TASKS
+    # 7.6 FOOTER & SYNC
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     status_footer_placeholder.markdown(f'<div style="font-size:0.65rem; color:#888; margin-bottom:10px;">⏱️ Load: {st.session_state.get("total_load_time", "N/A")} | 🔄 Sync: {now_str}</div>', unsafe_allow_html=True)
 
+    # Fundamentals Update
     if not lite_mode and st.session_state.market_df["Market Cap ($M)"].isnull().all():
         with st.status("Fetching Fundamentals...", expanded=False) as fundamental_status:
             try:
@@ -193,9 +178,8 @@ if not st.session_state.market_df.empty:
                 st.session_state.fundamentals_time = datetime.datetime.now().strftime("%H:%M")
                 for t, v in f_map.items():
                     for col, val in v.items(): 
-                        # Ensuring data is numeric before setting to prevent 'Infinity' crash [cite: 32, 45]
+                        # Ensuring data is numeric before assignment 
                         st.session_state.market_df.loc[st.session_state.market_df['TickerID'] == t, col] = v[col]
                 fundamental_status.update(label="Fundamentals Updated", state="complete")
                 st.rerun()
-            except Exception as e:
-                fundamental_status.update(label=f"Fundamental Sync Interrupted", state="error")
+            except: fundamental_status.update(label="Sync Error", state="error")
