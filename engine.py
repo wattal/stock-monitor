@@ -18,82 +18,58 @@ def calculate_rsi(series, period=14):
 @st.cache_data(ttl=3600)
 def get_usd_rate():
     try:
-        # Fix for deprecation warning: using iloc[0] for float conversion [cite: 25]
         df = yf.download("USDINR=X", period="5d", progress=False)
-        return float(df["Close"].iloc[-1])
+        return float(df["Close"].iloc[-1]) # Fixed iloc warning [cite: 25]
     except:
         return 84.5
 
-# --- BLOCK E2: UPDATED DATA FETCHING (Mobile & Hosted Stable) ---
+# --- BLOCK E2: DATA FETCHING ---
 @st.cache_data(ttl=600)
 def download_bulk_history(tickers, period="1mo"):
-    import yfinance as yf
-    import time
-    
-    # 1. COMPREHENSIVE BLACKLIST: Tickers that consistently fail or cause rate limits in logs [cite: 16, 17, 21, 40, 65-69]
-    blacklist = [
-        "^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", 
-        "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", 
-        "FERMENTA.NS", "MANGCHEFER.NS"
-    ]
+    # 1. Hard Blacklist from your logs [cite: 16, 17, 21, 40, 65-69]
+    blacklist = ["^NSEI", "WARDIN.BO", "JAGATJITIND.BO", "WARDFIN.BO", "HBLPOWER.NS", "BMW.NS", "SHARDAISPT.BO", "ORBITEXP.BO", "FERMENTA.NS", "MANGCHEFER.NS"]
     cleaned = [t.upper().strip() + (".NS" if not (t.endswith(".NS") or t.endswith(".BO")) else "") 
                for t in tickers if t not in blacklist]
     ticker_list = list(set(cleaned))
     
     all_chunks = []
-    chunk_size = 25 # Smaller batches are safer to stay under the rate-limit radar [cite: 17, 21, 40]
-    
+    chunk_size = 25 # Smaller batches to avoid Rate Limits
     for i in range(0, len(ticker_list), chunk_size):
         chunk = ticker_list[i : i + chunk_size]
         try:
-            # Polite fetching with threads=False for hosted Streamlit environment stability [cite: 17, 21, 40]
             data = yf.download(chunk, period=period, group_by="ticker", progress=False, threads=False)
             if not data.empty:
                 all_chunks.append(data)
-            time.sleep(0.8) # Human-like pause to avoid YFRateLimitError [cite: 65, 66]
-        except Exception:
-            continue
+            time.sleep(0.8) 
+        except: continue
 
     if not all_chunks: return pd.DataFrame()
-
     full_df = pd.concat(all_chunks, axis=1)
-    
-    # 2. TIMEZONE FIX: Stripping timezones to prevent DatetimeIndex join crashes
     if not full_df.empty:
-        full_df.index = full_df.index.tz_localize(None)
-        
+        full_df.index = full_df.index.tz_localize(None) # Fix timezone crash
     return full_df
 
 def calculate_baselines(tickers, raw_data, ref_date=None):
     baselines = {}
     cut = pd.to_datetime(ref_date).tz_localize(None) if ref_date else None
-    
     for t in tickers:
         try:
-            if t not in raw_data: continue
-            df = raw_data[t].dropna(subset=["Close"])
+            df = raw_data[t].dropna(subset=["Close"]) if t in raw_data else pd.DataFrame()
             if df.empty: continue
-            
             data_len = len(df)
-            rec_30d = df.iloc[-min(22, data_len):] 
-            rec_15d = df.iloc[-min(11, data_len):]
-            rec_7d = df.iloc[-min(5, data_len):]
-            
-            rl = np.nan
-            if cut:
-                since_df = df[df.index >= cut]
-                if not since_df.empty: rl = float(since_df["Low"].min())
-            
             baselines[t] = {
-                "30H": float(rec_30d["High"].max()), "30L": float(rec_30d["Low"].min()),
-                "15H": float(rec_15d["High"].max()), "15L": float(rec_15d["Low"].min()),
-                "7H": float(rec_7d["High"].max()), "7L": float(rec_7d["Low"].min()),
+                "30H": float(df.iloc[-min(22, data_len):]["High"].max()), 
+                "30L": float(df.iloc[-min(22, data_len):]["Low"].min()),
+                "15H": float(df.iloc[-min(11, data_len):]["High"].max()), 
+                "15L": float(df.iloc[-min(11, data_len):]["Low"].min()),
+                "7H": float(df.iloc[-min(5, data_len):]["High"].max()), 
+                "7L": float(df.iloc[-min(5, data_len):]["Low"].min()),
                 "52H": float(df["High"].max()) if data_len > 200 else np.nan,
                 "52L": float(df["Low"].min()) if data_len > 200 else np.nan,
                 "MA100": float(df["Close"].iloc[-100:].mean()) if data_len > 100 else np.nan,
                 "RSI": calculate_rsi(df["Close"]).iloc[-1] if data_len > 14 else 50,
                 "AvgVol": float(df["Volume"].iloc[-min(10, data_len):].mean()), 
-                "RefLow": rl,
+                "RefLow": float(df[df.index >= cut]["Low"].min()) if cut and not df[df.index >= cut].empty else np.nan,
             }
         except: continue 
     return baselines
@@ -102,16 +78,12 @@ def get_live_data(tickers, baselines, dormant_set):
     from tickers import MASTER_MAP
     active = [t for t in tickers if t not in dormant_set]
     rows, failed = [], []
-    if not active: return pd.DataFrame(), 0, []
-    
-    # Batch fetching live data to avoid 'NoneType' errors [cite: 17, 18]
     data = yf.download(active, period="5d", group_by="ticker", progress=False, threads=True)
     for t in active:
         try:
             df_t = data[t] if len(active) > 1 else data
-            if df_t is not None and not df_t.empty:
+            if not df_t.empty:
                 valid = df_t.dropna(subset=["Close"])
-                if valid.empty: continue
                 p = float(valid["Close"].iloc[-1])
                 prev = float(valid["Close"].iloc[-2]) if len(valid) > 1 else p
                 b = baselines.get(t, {})
@@ -132,23 +104,17 @@ def get_live_data(tickers, baselines, dormant_set):
 @st.cache_data(ttl=86400)
 def fetch_fundamentals_map(tickers, usd_rate):
     results = {}
+    def clean_val(val): # THE FIX FOR ARROW CRASH [cite: 32, 50, 57]
+        if val is None or str(val).lower() in ['inf', 'infinity']: return np.nan
+        try: return float(val)
+        except: return np.nan
     for t in tickers:
         try:
             info = yf.Ticker(t).info
-            # THE CRITICAL FIX: Explicitly block 'Infinity' strings from entering the data pipeline 
-            def clean_val(val):
-                if val is None or str(val).lower() in ['inf', 'infinity']:
-                    return np.nan
-                try:
-                    return float(val)
-                except:
-                    return np.nan
-
             mcap = info.get("marketCap", np.nan)
             curr = info.get("currency", "INR")
             if not pd.isna(mcap):
                 mcap = (mcap / usd_rate / 1_000_000) if curr == "INR" else (mcap / 1_000_000)
-
             results[t] = {
                 "Market Cap ($M)": round(float(mcap), 2) if not pd.isna(mcap) else np.nan,
                 "PE Ratio": clean_val(info.get("trailingPE")),
@@ -161,8 +127,7 @@ def fetch_fundamentals_map(tickers, usd_rate):
 
 def load_watchlist():
     if not os.path.exists("watchlist.txt"): return []
-    with open("watchlist.txt", "r") as f:
-        return [line.strip() for line in f.readlines() if line.strip()]
+    with open("watchlist.txt", "r") as f: return [line.strip() for line in f.readlines() if line.strip()]
 
 def save_to_watchlist(ticker, add=True):
     current = set(load_watchlist())
